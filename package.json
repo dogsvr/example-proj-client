@@ -1,0 +1,23 @@
+{
+  "name": "example-proj-client",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rm -rf dist && mkdir dist && cp package.json README.md dist && npx tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dogsvr/example-proj-client.git"
+  },
+  "author": "rowanzhu",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/dogsvr/example-proj-client/issues"
+  },
+  "homepage": "https://github.com/dogsvr/example-proj-client#readme",
+  "dependencies": {
+    "tsrpc": "^3.4.17"
+  }
+}
