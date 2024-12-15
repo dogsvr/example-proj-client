@@ -12,6 +12,12 @@ const client = new WsClient(serviceProto, {
 
 client.listenMsg("Common", (msg: MsgCommon) => {
     console.log("recv server push:", msg);
+    let ntf = JSON.parse(msg.innerMsg as string);
+    if (msg.head.cmdId === cmdId.ZONE_BATTLE_END_NTF) {
+        game.registry.set('roleLocal', ntf.role);
+        const scene = game.scene.getScene('main') as MainScene;
+        scene.onBattleEnd(ntf);
+    }
 });
 
 async function connect() {
@@ -23,7 +29,7 @@ async function connect() {
 }
 
 async function getZoneList() {
-    const req = { req: "getZoneList" };
+    const req = {};
     let ret = await client.callApi('Common', {
         head: {
             cmdId: cmdId.DIR_QUERY_ZONE_LIST,
@@ -43,7 +49,7 @@ async function getZoneList() {
 }
 
 async function zoneLogin(openId: string, zoneId: number, name: string) {
-    const req = { req: "zoneLogin", openid: openId, zoneid: zoneId, name: name };
+    const req = { openId: openId, zoneId: zoneId };
     let ret = await client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_LOGIN,
@@ -60,6 +66,27 @@ async function zoneLogin(openId: string, zoneId: number, name: string) {
 
     let res = JSON.parse(ret.res.innerRes as string);
     startGame(res.role);
+}
+
+export async function startBattle() {
+    const role = game.registry.get('roleLocal');
+    const req = {};
+    let ret = await client.callApi('Common', {
+        head: {
+            cmdId: cmdId.ZONE_START_BATTLE,
+            openId: role.openId,
+            zoneId: role.zoneId
+        },
+        innerReq: JSON.stringify(req)
+    });
+
+    if (!ret.isSucc) {
+        console.log('call failed', ret.err.message);
+        return;
+    }
+
+    let res = JSON.parse(ret.res.innerRes as string);
+    game.registry.set('startBattleRes', res);
 }
 
 let game: Phaser.Game = null;
@@ -94,10 +121,10 @@ async function main() {
     await connect();
     let res = await getZoneList();
     const zoneidSelect = document.querySelector<HTMLSelectElement>("select#zoneid");
-    for (let zone of res.zonelist) {
+    for (let zone of res.zoneList) {
         const opt = document.createElement("option");
-        opt.value = zone.zone_id;
-        opt.innerHTML = zone.zone_id;
+        opt.value = zone.zoneId;
+        opt.innerHTML = zone.zoneId;
         zoneidSelect.appendChild(opt);
     }
 

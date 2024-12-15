@@ -60,12 +60,15 @@ export class BattleTestScene extends Phaser.Scene {
         const connectionStatusText = this.add
             .text(0, 0, "Trying to connect with the server...")
             .setStyle({ color: "#ff0000" })
-            .setPadding(4)
-        const client = new Client(`ws://${window.location.hostname}:2567`);
+            .setPadding(4);
+        const role = this.registry.get('roleLocal');
+        const startBattleRes = this.registry.get('startBattleRes');
+        const client = new Client(`ws://${window.location.hostname}:${startBattleRes.battleSvrAddr}`);
         try {
-            this.room = await client.joinOrCreate("battle_test_room", {});
+            
+            this.room = await client.joinOrCreate(startBattleRes.roomType,
+                { openId: role.openId, zoneId: role.zoneId });
             connectionStatusText.destroy();
-
         } catch (e) {
             connectionStatusText.text = "Could not connect with the server.";
         }

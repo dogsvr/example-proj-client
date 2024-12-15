@@ -1,6 +1,8 @@
 import Phaser from "phaser";
+import { startBattle } from "..";
 
 export class MainScene extends Phaser.Scene {
+    roleText: Phaser.GameObjects.Text;
     constructor() {
         super({ key: "main", active: true });
     }
@@ -11,7 +13,7 @@ export class MainScene extends Phaser.Scene {
 
     create() {
         const role = this.registry.get("roleLocal")
-        this.add.text(0, 0, `OpenId: ${role.openid}\nZoneId: ${role.zoneid}\nScore: ${role.score}\n`);
+        this.roleText = this.add.text(0, 0, `OpenId: ${role.openId}\nZoneId: ${role.zoneId}\nScore: ${role.score}\n`);
 
         const textStyle: Phaser.Types.GameObjects.Text.TextStyle = {
             color: "#ff0000",
@@ -21,8 +23,14 @@ export class MainScene extends Phaser.Scene {
         this.add.text(400, 300, "Start Battle", textStyle)
             .setInteractive()
             .setPadding(6)
-            .on("pointerdown", () => {
+            .on("pointerdown", async () => {
+                await startBattle();
                 this.game.scene.switch("main", "battle_test")
             });
+    }
+
+    onBattleEnd(ntf) {
+        const role = this.registry.get("roleLocal")
+        this.roleText.setText(`OpenId: ${role.openId}\nZoneId: ${role.zoneId}\nScore: ${role.score}\n`);
     }
 }
