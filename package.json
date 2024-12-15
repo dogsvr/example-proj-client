@@ -2,10 +2,10 @@
   "name": "example-proj-client",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "rm -rf dist && mkdir dist && cp package.json README.md dist && npx tsc"
+    "start": "parcel serve index.html",
+    "build": "parcel build index.html"
   },
   "repository": {
     "type": "git",
@@ -18,6 +18,13 @@
   },
   "homepage": "https://github.com/dogsvr/example-proj-client#readme",
   "dependencies": {
-    "tsrpc": "^3.4.17"
+    "colyseus.js": "^0.15.26",
+    "phaser": "^3.87.0",
+    "tsrpc-browser": "^3.4.16"
+  },
+  "devDependencies": {
+    "buffer": "^6.0.3",
+    "parcel": "^2.4.0",
+    "process": "^0.11.10"
   }
 }
