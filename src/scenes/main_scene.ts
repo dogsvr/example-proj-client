@@ -32,5 +32,6 @@ export class MainScene extends Phaser.Scene {
     onBattleEnd(ntf) {
         const role = this.registry.get("roleLocal")
         this.roleText.setText(`OpenId: ${role.openId}\nZoneId: ${role.zoneId}\nScore: ${role.score}\n`);
+        alert(`battle end\nscore change: ${ntf.scoreChange}`)
     }
 }

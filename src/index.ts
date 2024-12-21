@@ -1,36 +1,17 @@
 import Phaser from "phaser";
 import { MainScene } from "./scenes/main_scene";
 import { BattleTestScene } from "./scenes/battle_test_scene";
-import { WsClient } from 'tsrpc-browser';
+import { WsClient, HttpClient } from 'tsrpc-browser';
 import { serviceProto } from './shared/protocols/serviceProto';
 import { MsgCommon } from './shared/protocols/MsgCommon';
 import * as cmdId from './shared/cmd_id';
 
-const client = new WsClient(serviceProto, {
-    server: `ws://${window.location.hostname}:2000`
-});
-
-client.listenMsg("Common", (msg: MsgCommon) => {
-    console.log("recv server push:", msg);
-    let ntf = JSON.parse(msg.innerMsg as string);
-    if (msg.head.cmdId === cmdId.ZONE_BATTLE_END_NTF) {
-        game.registry.set('roleLocal', ntf.role);
-        const scene = game.scene.getScene('main') as MainScene;
-        scene.onBattleEnd(ntf);
-    }
-});
-
-async function connect() {
-    let connRes = await client.connect();
-    if (!connRes.isSucc) {
-        console.log('connect failed', connRes.errMsg);
-        return;
-    }
-}
-
 async function getZoneList() {
+    const dir_client = new HttpClient(serviceProto, {
+        server: `http://${window.location.hostname}:10000`
+    });
     const req = {};
-    let ret = await client.callApi('Common', {
+    let ret = await dir_client.callApi('Common', {
         head: {
             cmdId: cmdId.DIR_QUERY_ZONE_LIST,
             openId: "",
@@ -48,9 +29,20 @@ async function getZoneList() {
     return res;
 }
 
+let zone_client = null;
 async function zoneLogin(openId: string, zoneId: number, name: string) {
+    zone_client = new WsClient(serviceProto, {
+        server: `ws://${window.location.hostname}:20000`
+    });
+
+    let connRes = await zone_client.connect();
+    if (!connRes.isSucc) {
+        console.log('connect failed', connRes.errMsg);
+        return;
+    }
+
     const req = { openId: openId, zoneId: zoneId };
-    let ret = await client.callApi('Common', {
+    let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_LOGIN,
             openId: openId,
@@ -66,12 +58,22 @@ async function zoneLogin(openId: string, zoneId: number, name: string) {
 
     let res = JSON.parse(ret.res.innerRes as string);
     startGame(res.role);
+
+    zone_client.listenMsg("Common", (msg: MsgCommon) => {
+        console.log("recv server push:", msg);
+        let ntf = JSON.parse(msg.innerMsg as string);
+        if (msg.head.cmdId === cmdId.ZONE_BATTLE_END_NTF) {
+            game.registry.set('roleLocal', ntf.role);
+            const scene = game.scene.getScene('main') as MainScene;
+            scene.onBattleEnd(ntf);
+        }
+    });
 }
 
 export async function startBattle() {
     const role = game.registry.get('roleLocal');
     const req = {};
-    let ret = await client.callApi('Common', {
+    let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_START_BATTLE,
             openId: role.openId,
@@ -118,7 +120,6 @@ function startGame(role: {}) {
 }
 
 async function main() {
-    await connect();
     let res = await getZoneList();
     const zoneidSelect = document.querySelector<HTMLSelectElement>("select#zoneid");
     for (let zone of res.zoneList) {
