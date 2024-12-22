@@ -63,12 +63,13 @@
             <ul>
                 <li>
                     <label for="openid">OpenId:</label>
-                    <input type="text" id="openid" />
+                    <input type="text" id="openid" placeholder="Please enter a unique string as OpenId" />
                 </li>
                 <li>
                     <label for="zoneid">ZoneId:</label>
                     <select id="zoneid">
                     </select>
+                    Add new zone by run mongodb command, e.g: use dogsvr-example-proj && db.zone_coll.insertOne({zoneId:100001})
                 </li>
                 <li class="button">
                     <button type="submit">Login</button>
