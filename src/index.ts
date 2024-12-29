@@ -100,13 +100,13 @@ function startGame(role: {}) {
             forceSetTimeOut: true,
             smoothStep: false,
         },
-        width: 800,
-        height: 600,
+        width: 375,
+        height: 812,
         backgroundColor: '#3cb5d5',
         parent: 'game',
         scale: {
-            // mode: Phaser.Scale.FIT,
-            autoCenter: Phaser.Scale.CENTER_BOTH,
+            mode: Phaser.Scale.FIT,
+            // autoCenter: Phaser.Scale.CENTER_BOTH,
         },
         physics: {
             default: "arcade"

@@ -3,56 +3,21 @@
 
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>dogsvr Example</title>
     <style>
-        form {
-            margin: 0 auto;
-            width: 500px;
-            padding: 1em;
-            border: 1px solid #ccc;
-            border-radius: 1em;
-        }
-
         ul {
             list-style: none;
-            padding: 0;
-            margin: 0;
         }
-
-        form li+li {
-            margin-top: 1em;
+    
+        li {
+            margin: 1em auto;
+            padding: auto;
         }
-
-        label {
-            display: inline-block;
-            width: 90px;
-            text-align: right;
-        }
-
+    
         input {
-            font: 1em sans-serif;
-            width: 400px;
-            box-sizing: border-box;
-            border: 1px solid #999;
-        }
-
-        select {
-            font: 1em sans-serif;
-            width: 200px;
-            box-sizing: border-box;
-            border: 1px solid #999;
-        }
-
-        input:focus {
-            border-color: #000;
-        }
-
-        .button {
-            padding-left: 90px;
-        }
-
-        button {
-            margin-left: 0.5em;
+            width: 20em;
         }
     </style>
 </head>
@@ -72,7 +37,7 @@
                     <small>How to add new zone: run mongodb command, e.g: use dogsvr-example-proj &&
                         db.zone_coll.insertOne({zoneId:100001})</small>
                 </li>
-                <li class="button">
+                <li>
                     <button type="submit">Login</button>
                 </li>
             </ul>

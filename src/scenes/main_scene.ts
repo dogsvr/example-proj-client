@@ -20,7 +20,7 @@ export class MainScene extends Phaser.Scene {
             fontSize: "32px",
             fontFamily: "Arial"
         };
-        this.add.text(400, 300, "Start Battle", textStyle)
+        this.add.text(0, 400, "Start Battle", textStyle)
             .setInteractive()
             .setPadding(6)
             .on("pointerdown", async () => {

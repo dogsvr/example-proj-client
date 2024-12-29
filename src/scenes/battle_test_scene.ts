@@ -5,7 +5,6 @@ export class BattleTestScene extends Phaser.Scene {
     room: Room;
     playerEntities: { [sessionId: string]: Phaser.Types.Physics.Arcade.ImageWithDynamicBody } = {};
     debugFPS: Phaser.GameObjects.Text;
-    cursorKeys: Phaser.Types.Input.Keyboard.CursorKeys;
     inputPayload = {
         left: false,
         right: false,
@@ -18,9 +17,8 @@ export class BattleTestScene extends Phaser.Scene {
     }
 
     async create() {
-        this.cursorKeys = this.input.keyboard.createCursorKeys();
         this.debugFPS = this.add.text(4, 4, "", { color: "#ff0000", });
-        this.add.text(0, 500, "Back")
+        this.add.text(0, 40, "Back")
             .setInteractive()
             .setPadding(6)
             .on("pointerdown", () => {
@@ -47,7 +45,7 @@ export class BattleTestScene extends Phaser.Scene {
             }
         });
 
-        this.cameras.main.setBounds(0, 0, 800, 600);
+        this.cameras.main.setBounds(0, 0, 375, 812);
 
         this.events.once("shutdown", () => {
             this.room.leave();
@@ -78,10 +76,11 @@ export class BattleTestScene extends Phaser.Scene {
         if (!this.room) {
             return;
         }
-        this.inputPayload.left = this.cursorKeys.left.isDown;
-        this.inputPayload.right = this.cursorKeys.right.isDown;
-        this.inputPayload.up = this.cursorKeys.up.isDown;
-        this.inputPayload.down = this.cursorKeys.down.isDown;
+        let pointer = this.input.activePointer;
+        this.inputPayload.left = pointer.isDown && pointer.position.x < pointer.downX;
+        this.inputPayload.right = pointer.isDown && pointer.position.x > pointer.downX;
+        this.inputPayload.up = pointer.isDown && pointer.position.y < pointer.downY;
+        this.inputPayload.down = pointer.isDown && pointer.position.y > pointer.downY;
         this.room.send(0, this.inputPayload);
 
         this.debugFPS.text = `Frame rate: ${this.game.loop.actualFps}`;
