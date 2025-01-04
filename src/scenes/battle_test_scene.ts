@@ -3,7 +3,8 @@ import { Room, Client } from "colyseus.js";
 
 export class BattleTestScene extends Phaser.Scene {
     room: Room;
-    playerEntities: { [sessionId: string]: Phaser.Types.Physics.Arcade.ImageWithDynamicBody } = {};
+    playerEntities: { [sessionId: string]: Phaser.GameObjects.Rectangle } = {};
+    ballEntities: { [key: number]: Phaser.GameObjects.Arc } = {};
     debugFPS: Phaser.GameObjects.Text;
     inputPayload = {
         left: false,
@@ -28,7 +29,7 @@ export class BattleTestScene extends Phaser.Scene {
 
         await this.connect();
         this.room.state.players.onAdd((player, sessionId) => {
-            const entity = this.physics.add.image(player.x, player.y, '');
+            const entity = this.add.rectangle(player.x, player.y, 20, 20, 0);
             this.playerEntities[sessionId] = entity;
 
             player.onChange(() => {
@@ -42,6 +43,23 @@ export class BattleTestScene extends Phaser.Scene {
             if (entity) {
                 entity.destroy();
                 delete this.playerEntities[sessionId]
+            }
+        });
+
+        this.room.state.balls.onAdd((ball, key) => {
+            const entity = this.add.arc(ball.x, ball.y, 5, 0, 360, false, 0);
+            this.ballEntities[key] = entity;
+
+            ball.onChange(() => {
+                entity.x = ball.x;
+                entity.y = ball.y;
+            });
+        });
+        this.room.state.balls.onRemove((ball, key) => {
+            const entity = this.ballEntities[key];
+            if (entity) {
+                entity.destroy();
+                delete this.ballEntities[key];
             }
         });
 
