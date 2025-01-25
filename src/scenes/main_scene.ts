@@ -20,12 +20,19 @@ export class MainScene extends Phaser.Scene {
             fontSize: "32px",
             fontFamily: "Arial"
         };
-        this.add.text(0, 400, "Start Battle", textStyle)
+        this.add.text(0, 300, "Start Battle(state)", textStyle)
             .setInteractive()
             .setPadding(6)
             .on("pointerdown", async () => {
-                await startBattle();
-                this.game.scene.switch("main", "battle_test")
+                await startBattle("state");
+                this.game.scene.switch("main", "state_sync_battle")
+            });
+        this.add.text(0, 500, "Start Battle(lockstep)", textStyle)
+            .setInteractive()
+            .setPadding(6)
+            .on("pointerdown", async () => {
+                await startBattle("lockstep");
+                this.game.scene.switch("main", "lockstep_sync_battle")
             });
     }
 

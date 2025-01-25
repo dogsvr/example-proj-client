@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { MainScene } from "./scenes/main_scene";
-import { BattleTestScene } from "./scenes/battle_test_scene";
+import { StateSyncBattleScene } from "./scenes/state_sync_battle_scene";
+import { LockstepSyncBattleScene } from "./scenes/lockstep_sync_battle_scene";
 import { WsClient, HttpClient } from 'tsrpc-browser';
 import { serviceProto } from './shared/protocols/serviceProto';
 import { MsgCommon } from './shared/protocols/MsgCommon';
@@ -70,9 +71,9 @@ async function zoneLogin(openId: string, zoneId: number, name: string) {
     });
 }
 
-export async function startBattle() {
+export async function startBattle(syncType: string) {
     const role = game.registry.get('roleLocal');
-    const req = {};
+    const req = { syncType: syncType };
     let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_START_BATTLE,
@@ -109,10 +110,10 @@ function startGame(role: {}) {
             // autoCenter: Phaser.Scale.CENTER_BOTH,
         },
         physics: {
-            default: "arcade"
+            default: "matter"
         },
         pixelArt: true,
-        scene: [MainScene, BattleTestScene],
+        scene: [MainScene, StateSyncBattleScene, LockstepSyncBattleScene],
     };
 
     game = new Phaser.Game(config);

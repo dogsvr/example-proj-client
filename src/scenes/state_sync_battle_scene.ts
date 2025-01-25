@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { Room, Client } from "colyseus.js";
 
-export class BattleTestScene extends Phaser.Scene {
+export class StateSyncBattleScene extends Phaser.Scene {
     room: Room;
     playerEntities: { [sessionId: string]: Phaser.GameObjects.Rectangle } = {};
     ballEntities: { [key: number]: Phaser.GameObjects.Arc } = {};
@@ -14,7 +14,7 @@ export class BattleTestScene extends Phaser.Scene {
     };
 
     constructor() {
-        super({ key: "battle_test" });
+        super({ key: "state_sync_battle" });
     }
 
     async create() {
@@ -23,7 +23,7 @@ export class BattleTestScene extends Phaser.Scene {
             .setInteractive()
             .setPadding(6)
             .on("pointerdown", () => {
-                this.game.scene.stop("battle_test")
+                this.game.scene.stop("state_sync_battle")
                 this.game.scene.run("main")
             });
 
@@ -69,6 +69,7 @@ export class BattleTestScene extends Phaser.Scene {
             this.room.leave();
             this.room = undefined;
             this.playerEntities = {};
+            this.ballEntities = {};
         });
     }
 
