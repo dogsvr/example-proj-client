@@ -134,7 +134,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
 
     execFrame(frame: Frame) {
         frame.actions.forEach(action => {
-            console.log("exec action:", action);
+            // console.log("exec action:", action);
             switch (action.vkey) {
                 case "join": {
                     const entity = this.matter.add.gameObject(

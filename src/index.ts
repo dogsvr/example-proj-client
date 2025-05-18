@@ -92,6 +92,26 @@ export async function startBattle(syncType: string) {
     game.registry.set('startBattleRes', res);
 }
 
+export async function queryRankList() {
+    const role = game.registry.get('roleLocal');
+    const req = { offset: 0, count: 100 };
+    let ret = await zone_client.callApi('Common', {
+        head: {
+            cmdId: cmdId.ZONE_QUERY_RANK_LIST,
+            openId: role.openId,
+            zoneId: role.zoneId
+        },
+        innerReq: JSON.stringify(req)
+    });
+
+    if (!ret.isSucc) {
+        console.log('call failed', ret.err.message);
+        return;
+    }
+
+    alert(`RankList: ${ret.res.innerRes}`)
+}
+
 let game: Phaser.Game = null;
 function startGame(role: {}) {
     const config: Phaser.Types.Core.GameConfig = {

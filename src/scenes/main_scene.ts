@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { startBattle } from "..";
+import { queryRankList, startBattle } from "..";
 
 export class MainScene extends Phaser.Scene {
     roleText: Phaser.GameObjects.Text;
@@ -33,6 +33,12 @@ export class MainScene extends Phaser.Scene {
             .on("pointerdown", async () => {
                 await startBattle("lockstep");
                 this.game.scene.switch("main", "lockstep_sync_battle")
+            });
+        this.add.text(0, 700, "Query Rank List", { color: "#ff0000", fontSize: "16px", fontFamily: "Arial" })
+            .setInteractive()
+            .setPadding(6)
+            .on("pointerdown", async () => {
+                await queryRankList();
             });
     }
 
