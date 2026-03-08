@@ -177,7 +177,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             }
             let x = entity.body.position.x;
             let y = entity.body.position.y;
-            const speed = 1;
+            const speed = 4;
             if (entity["direction"] === "left") {
                 x += speed;
             } else if (entity["direction"] === "right") {
