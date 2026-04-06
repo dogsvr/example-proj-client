@@ -78,14 +78,24 @@ export const serviceProto: ServiceProto<ServiceType> = {
                     "name": "openId",
                     "type": {
                         "type": "String"
-                    }
+                    },
+                    "optional": true
                 },
                 {
                     "id": 2,
                     "name": "zoneId",
                     "type": {
                         "type": "Number"
-                    }
+                    },
+                    "optional": true
+                },
+                {
+                    "id": 3,
+                    "name": "gid",
+                    "type": {
+                        "type": "Number"
+                    },
+                    "optional": true
                 }
             ]
         },

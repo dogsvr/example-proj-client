@@ -1,5 +1,6 @@
 export interface Head {
     cmdId: number,
-    openId: string,
-    zoneId: number
+    openId?: string,
+    zoneId?: number,
+    gid?: number
 }
