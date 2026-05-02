@@ -78,13 +78,15 @@ export class StateSyncBattleScene extends Phaser.Scene {
             .text(0, 0, "Trying to connect with the server...")
             .setStyle({ color: "#ff0000" })
             .setPadding(4);
-        const role = this.registry.get('roleLocal');
         const startBattleRes = this.registry.get('startBattleRes');
         const client = new Client(`ws://${window.location.hostname}:${startBattleRes.battleSvrAddr}`);
         try {
-            
+            // Server is authoritative on identity: the ticket (issued by
+            // battlesvr in the BATTLE_START_BATTLE response) is consumed in
+            // Colyseus onAuth to recover {gid, openId, zoneId}. We deliberately
+            // do NOT pass openId/zoneId here to avoid letting clients spoof.
             this.room = await client.joinOrCreate(startBattleRes.roomType,
-                { openId: role.openId, zoneId: role.zoneId });
+                { ticket: startBattleRes.ticket });
             connectionStatusText.destroy();
         } catch (e) {
             connectionStatusText.text = "Could not connect with the server.";

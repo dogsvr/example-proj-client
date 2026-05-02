@@ -94,7 +94,7 @@ export async function startBattle(syncType: string) {
 
 export async function queryRankList() {
     const role = game.registry.get('roleLocal');
-    const req = { offset: 0, count: 100 };
+    const req = { rankId: 1, offset: 0, count: 100 };
     let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_QUERY_RANK_LIST,

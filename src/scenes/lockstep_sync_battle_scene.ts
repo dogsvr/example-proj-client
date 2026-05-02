@@ -92,12 +92,14 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             .text(0, 0, "Trying to connect with the server...")
             .setStyle({ color: "#ff0000" })
             .setPadding(4);
-        const role = this.registry.get('roleLocal');
         const startBattleRes = this.registry.get('startBattleRes');
         const client = new Client(`ws://${window.location.hostname}:${startBattleRes.battleSvrAddr}`);
         try {
+            // Identity is carried by the one-time ticket issued by battlesvr
+            // (consumed in Colyseus onAuth). Do not pass openId/zoneId here --
+            // server must not trust client-supplied identity fields.
             this.room = await client.joinOrCreate(startBattleRes.roomType,
-                { openId: role.openId, zoneId: role.zoneId });
+                { ticket: startBattleRes.ticket });
             connectionStatusText.destroy();
 
             this.room.onMessage(0, (message) => {
