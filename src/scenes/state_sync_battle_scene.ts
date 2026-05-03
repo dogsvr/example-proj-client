@@ -1,10 +1,16 @@
 import Phaser from "phaser";
-import { Room, Client } from "colyseus.js";
+import { Room, Client, getStateCallbacks } from "@colyseus/sdk";
 
 export class StateSyncBattleScene extends Phaser.Scene {
     room: Room;
     playerEntities: { [sessionId: string]: Phaser.GameObjects.Rectangle } = {};
-    ballEntities: { [key: number]: Phaser.GameObjects.Arc } = {};
+    // ArraySchema's onAdd/onRemove in @colyseus/schema v4 use different key
+    // semantics: onAdd gives insertion ordinal (monotonic), onRemove gives
+    // current array index (shifts left when items are removed). Keying by
+    // either number makes them impossible to correlate, so we key entities by
+    // the Ball schema instance itself, which is the same object reference in
+    // both callbacks.
+    ballEntities: Map<object, Phaser.GameObjects.Arc> = new Map();
     debugFPS: Phaser.GameObjects.Text;
     inputPayload = {
         left: false,
@@ -28,39 +34,59 @@ export class StateSyncBattleScene extends Phaser.Scene {
             });
 
         await this.connect();
-        this.room.state.players.onAdd((player, sessionId) => {
-            const entity = this.add.rectangle(player.x, player.y, 20, 20, 0);
-            this.playerEntities[sessionId] = entity;
 
-            player.onChange(() => {
-                entity.x = player.x;
-                entity.y = player.y;
+        // colyseus 0.17 + @colyseus/schema v4: collection callbacks are no
+        // longer methods on MapSchema / ArraySchema themselves. They are
+        // accessed through a proxy returned by getStateCallbacks(room).
+        //
+        //   const $ = getStateCallbacks(room)
+        //   $(collection).onAdd((item, key) => ...)    -- MapSchema / ArraySchema
+        //   $(collection).onRemove((item, key) => ...)
+        //   $(schemaInstance).onChange(() => ...)      -- whole-schema change
+        //   $(schemaInstance).listen("field", (v, prev) => ...)
+        //
+        // Also: `await client.joinOrCreate()` resolves before the server's
+        // initial state arrives. `room.state.players` is undefined at that
+        // point. We must wait for the first `onStateChange` (which fires after
+        // the schema reflection + initial state snapshot) before registering
+        // collection callbacks.
+        this.room.onStateChange.once((state) => {
+            const $ = getStateCallbacks(this.room);
+
+            $(state.players).onAdd((player, sessionId) => {
+                const entity = this.add.rectangle(player.x, player.y, 20, 20, 0);
+                this.playerEntities[sessionId] = entity;
+
+                $(player).onChange(() => {
+                    entity.x = player.x;
+                    entity.y = player.y;
+                });
             });
-        });
 
-        this.room.state.players.onRemove((player, sessionId) => {
-            const entity = this.playerEntities[sessionId];
-            if (entity) {
-                entity.destroy();
-                delete this.playerEntities[sessionId]
-            }
-        });
-
-        this.room.state.balls.onAdd((ball, key) => {
-            const entity = this.add.arc(ball.x, ball.y, 5, 0, 360, false, 0);
-            this.ballEntities[key] = entity;
-
-            ball.onChange(() => {
-                entity.x = ball.x;
-                entity.y = ball.y;
+            $(state.players).onRemove((player, sessionId) => {
+                const entity = this.playerEntities[sessionId];
+                if (entity) {
+                    entity.destroy();
+                    delete this.playerEntities[sessionId]
+                }
             });
-        });
-        this.room.state.balls.onRemove((ball, key) => {
-            const entity = this.ballEntities[key];
-            if (entity) {
-                entity.destroy();
-                delete this.ballEntities[key];
-            }
+
+            $(state.balls).onAdd((ball, key) => {
+                const entity = this.add.arc(ball.x, ball.y, 5, 0, 360, false, 0);
+                this.ballEntities.set(ball, entity);
+
+                $(ball).onChange(() => {
+                    entity.x = ball.x;
+                    entity.y = ball.y;
+                });
+            });
+            $(state.balls).onRemove((ball, key) => {
+                const entity = this.ballEntities.get(ball);
+                if (entity) {
+                    entity.destroy();
+                    this.ballEntities.delete(ball);
+                }
+            });
         });
 
         this.cameras.main.setBounds(0, 0, 375, 812);
@@ -69,7 +95,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
             this.room.leave();
             this.room = undefined;
             this.playerEntities = {};
-            this.ballEntities = {};
+            this.ballEntities = new Map();
         });
     }
 

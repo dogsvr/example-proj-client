@@ -1,30 +1,39 @@
 {
   "name": "example-proj-client",
-  "version": "1.0.0",
+  "version": "0.1.0",
+  "private": true,
   "description": "",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "parcel serve index.html --port 4567",
     "build": "parcel build index.html"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/dogsvr/example-proj-client.git"
-  },
   "author": "rowanzhu",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/dogsvr/example-proj-client/issues"
+  "alias": {
+    "bufferutil": false,
+    "utf-8-validate": false,
+    "net": false,
+    "tls": false
   },
-  "homepage": "https://github.com/dogsvr/example-proj-client#readme",
   "dependencies": {
-    "colyseus.js": "^0.15.26",
-    "phaser": "^3.87.0",
-    "tsrpc-browser": "^3.4.16"
+    "@colyseus/sdk": "^0.17.42",
+    "phaser": "^4.1.0",
+    "tsrpc-browser": "^3.4.18"
   },
   "devDependencies": {
+    "assert": "^2.1.0",
+    "browserify-zlib": "^0.2.0",
     "buffer": "^6.0.3",
-    "parcel": "^2.4.0",
-    "process": "^0.11.10"
+    "crypto-browserify": "^3.12.1",
+    "events": "^3.3.0",
+    "https-browserify": "^1.0.0",
+    "parcel": "^2.16.4",
+    "process": "^0.11.10",
+    "stream-browserify": "^3.0.0",
+    "stream-http": "^3.2.0",
+    "typescript": "^6.0.3",
+    "url": "^0.11.4",
+    "util": "^0.12.5",
+    "vm-browserify": "^1.1.2"
   }
 }

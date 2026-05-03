@@ -10,7 +10,7 @@ cd example-proj-client
 npm install
 ```
 
-**Node.js**: tested on **v16.15.1 on Linux (x86-64)**. Newer LTS versions (18 / 20 / 22) are expected to work but are not routinely exercised; older versions may not. File an issue if something breaks on your runtime.
+**Node.js**: tested on **v24.13.0 on Linux (x86-64)**; other maintained LTS lines are expected to work but are not routinely exercised. File an issue if something breaks on your runtime.
 
 ## Usage
 

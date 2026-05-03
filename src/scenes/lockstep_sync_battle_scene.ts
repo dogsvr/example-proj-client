@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { Room, Client } from "colyseus.js";
+import { Room, Client } from "@colyseus/sdk";
 import { BodyType } from "matter";
 
 type Action = {
