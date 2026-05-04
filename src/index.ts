@@ -3,15 +3,22 @@ import { MainScene } from "./scenes/main_scene";
 import { StateSyncBattleScene } from "./scenes/state_sync_battle_scene";
 import { LockstepSyncBattleScene } from "./scenes/lockstep_sync_battle_scene";
 import { WsClient, HttpClient } from 'tsrpc-browser';
-import { serviceProto } from './shared/protocols/serviceProto';
-import { MsgCommon } from './shared/protocols/MsgCommon';
-import * as cmdId from './shared/cmd_id';
+import { serviceProto } from '@dogsvr/cl-tsrpc/protocols/serviceProto';
+import { MsgCommon } from '@dogsvr/cl-tsrpc/protocols/MsgCommon';
+import * as cmdId from 'example-proj/protocols/cmd_id';
+import type {
+    DirQueryZoneListReq, DirQueryZoneListRes,
+    ZoneLoginReq, ZoneLoginRes,
+    ZoneStartBattleReq, ZoneStartBattleRes,
+    ZoneQueryRankListReq, ZoneQueryRankListRes,
+    ZoneBattleEndNtf,
+} from 'example-proj/protocols/cmd_proto';
 
 async function getZoneList() {
     const dir_client = new HttpClient(serviceProto, {
         server: `http://${window.location.hostname}:10000`
     });
-    const req = {};
+    const req: DirQueryZoneListReq = {};
     let ret = await dir_client.callApi('Common', {
         head: {
             cmdId: cmdId.DIR_QUERY_ZONE_LIST,
@@ -26,7 +33,7 @@ async function getZoneList() {
         return;
     }
 
-    let res = JSON.parse(ret.res.innerRes as string);
+    let res: DirQueryZoneListRes = JSON.parse(ret.res.innerRes as string);
     return res;
 }
 
@@ -42,7 +49,7 @@ async function zoneLogin(openId: string, zoneId: number, name: string) {
         return;
     }
 
-    const req = { openId: openId, zoneId: zoneId };
+    const req: ZoneLoginReq = { openId: openId, zoneId: zoneId };
     let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_LOGIN,
@@ -57,13 +64,13 @@ async function zoneLogin(openId: string, zoneId: number, name: string) {
         return;
     }
 
-    let res = JSON.parse(ret.res.innerRes as string);
+    let res: ZoneLoginRes = JSON.parse(ret.res.innerRes as string);
     startGame(res.role);
 
     zone_client.listenMsg("Common", (msg: MsgCommon) => {
         console.log("recv server push:", msg);
-        let ntf = JSON.parse(msg.innerMsg as string);
         if (msg.head.cmdId === cmdId.ZONE_BATTLE_END_NTF) {
+            let ntf: ZoneBattleEndNtf = JSON.parse(msg.innerMsg as string);
             game.registry.set('roleLocal', ntf.role);
             const scene = game.scene.getScene('main') as MainScene;
             scene.onBattleEnd(ntf);
@@ -73,7 +80,7 @@ async function zoneLogin(openId: string, zoneId: number, name: string) {
 
 export async function startBattle(syncType: string) {
     const role = game.registry.get('roleLocal');
-    const req = { syncType: syncType };
+    const req: ZoneStartBattleReq = { syncType: syncType };
     let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_START_BATTLE,
@@ -88,13 +95,13 @@ export async function startBattle(syncType: string) {
         return;
     }
 
-    let res = JSON.parse(ret.res.innerRes as string);
+    let res: ZoneStartBattleRes = JSON.parse(ret.res.innerRes as string);
     game.registry.set('startBattleRes', res);
 }
 
 export async function queryRankList() {
     const role = game.registry.get('roleLocal');
-    const req = { rankId: 1, offset: 0, count: 100 };
+    const req: ZoneQueryRankListReq = { rankId: 1, offset: 0, count: 100 };
     let ret = await zone_client.callApi('Common', {
         head: {
             cmdId: cmdId.ZONE_QUERY_RANK_LIST,
@@ -145,8 +152,8 @@ async function main() {
     const zoneidSelect = document.querySelector<HTMLSelectElement>("select#zoneid");
     for (let zone of res.zoneList) {
         const opt = document.createElement("option");
-        opt.value = zone.zoneId;
-        opt.innerHTML = zone.zoneId;
+        opt.value = String(zone.zoneId);
+        opt.innerHTML = String(zone.zoneId);
         zoneidSelect.appendChild(opt);
     }
 

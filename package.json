@@ -5,35 +5,25 @@
   "description": "",
   "scripts": {
     "start": "parcel serve index.html --port 4567",
-    "build": "parcel build index.html"
+    "build": "parcel build index.html",
+    "linkDog": "npm link @dogsvr/cl-tsrpc"
   },
   "author": "rowanzhu",
   "license": "MIT",
-  "alias": {
-    "bufferutil": false,
-    "utf-8-validate": false,
-    "net": false,
-    "tls": false
+  "@parcel/resolver-default": {
+    "packageExports": true
   },
   "dependencies": {
     "@colyseus/sdk": "^0.17.42",
+    "@dogsvr/cl-tsrpc": "^0.4.0",
+    "example-proj": "file:../example-proj",
     "phaser": "^4.1.0",
     "tsrpc-browser": "^3.4.18"
   },
   "devDependencies": {
-    "assert": "^2.1.0",
-    "browserify-zlib": "^0.2.0",
     "buffer": "^6.0.3",
-    "crypto-browserify": "^3.12.1",
-    "events": "^3.3.0",
-    "https-browserify": "^1.0.0",
     "parcel": "^2.16.4",
     "process": "^0.11.10",
-    "stream-browserify": "^3.0.0",
-    "stream-http": "^3.2.0",
-    "typescript": "^6.0.3",
-    "url": "^0.11.4",
-    "util": "^0.12.5",
-    "vm-browserify": "^1.1.2"
+    "typescript": "^6.0.3"
   }
 }
