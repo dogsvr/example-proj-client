@@ -18,6 +18,7 @@
     "@dogsvr/cl-tsrpc": "^0.4.0",
     "example-proj": "file:../example-proj",
     "phaser": "^4.1.0",
+    "phaser4-rex-plugins": "^4.0.6",
     "tsrpc-browser": "^3.4.18"
   },
   "devDependencies": {
