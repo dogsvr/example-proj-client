@@ -45,6 +45,18 @@ export class PreloadScene extends Phaser.Scene {
         // this scene alive beneath MainScene.
         this.scene.launch('main');
         this.overlay.hide();
+
+        // Signal the DOM overlay (#app-loading in index.html) that Phaser's
+        // gradient + first frame are now on screen, so it's safe to fade the
+        // DOM overlay away. bootstrap.ts registers a one-shot listener that
+        // calls hideLoading() on this event. We wait one rAF tick so the
+        // gradient is actually rasterized before the DOM overlay starts its
+        // 220 ms opacity fade — otherwise there's a ~1 frame window where
+        // the DOM overlay is already half-transparent but no canvas pixels
+        // are behind it yet, showing the HTML body background through.
+        requestAnimationFrame(() => {
+            window.dispatchEvent(new CustomEvent('dogsvr:phaser-ready'));
+        });
     }
 
     /**

@@ -1,6 +1,6 @@
 # example-proj-client
 
-Phaser 3 web client for [`example-proj`](https://github.com/dogsvr/example-proj) — connects to the three reference servers (`dir` / `zonesvr` / `battlesvr`) via `tsrpc-browser` and `colyseus.js`, bundled with Parcel.
+Phaser 4 web client for [`example-proj`](https://github.com/dogsvr/example-proj) — connects to the three reference servers (`dir` / `zonesvr` / `battlesvr`) via `tsrpc-browser` and `@colyseus/sdk`, bundled with Parcel.
 
 ## Install
 

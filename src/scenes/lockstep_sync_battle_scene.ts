@@ -3,7 +3,7 @@ import type UIPlugin from 'phaser4-rex-plugins/templates/ui/ui-plugin.js';
 import RoundRectangle from 'phaser4-rex-plugins/plugins/roundrectangle.js';
 import { Room, Client } from '@colyseus/sdk';
 import { BodyType } from 'matter';
-import { Palette, Radius, Spacing, FontSize, HexText, SceneBG } from '../theme';
+import { Palette, Radius, Spacing, FontSize, HexText, SceneBG, textStyle } from '../theme';
 import { paintGradientBackground } from '../ui/background';
 
 type Action = { vkey: any; args: any; playerId: any };
@@ -92,30 +92,32 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
     }
 
     private buildHud() {
-        this.debugFPS = this.add.text(0, 0, 'FPS --', {
-            color: HexText.primary,
-            fontSize: `${FontSize.caption}px`,
-            fontFamily: 'sans-serif',
-        });
-        this.statusText = this.add.text(0, 0, 'Connecting…', {
-            color: HexText.secondary,
-            fontSize: `${FontSize.caption}px`,
-            fontFamily: 'sans-serif',
-        });
+        // White HUD with navy text, navy Back button with white text.
+        // 12.6:1 contrast on every element (AAA) with no layering /
+        // shadow / alpha gimmicks — the earlier "white-card + drop
+        // shadow + glyph shadow" revision had a display-list z-order
+        // bug that painted the card over the text. See
+        // state_sync_battle_scene.buildHud() for the full debug trail.
+        this.debugFPS = this.add.text(0, 0, 'FPS --',
+            textStyle({ size: FontSize.caption, color: HexText.primary, weight: 'bold' }));
+        this.statusText = this.add.text(0, 0, 'Connecting…',
+            textStyle({ size: FontSize.caption, color: HexText.primary }));
 
-        const backBg = new RoundRectangle(this, 0, 0, 2, 2, Radius.btn, Palette.accent);
+        const backBg = new RoundRectangle(this, 0, 0, 2, 2, Radius.btn, Palette.textPrimary);
         this.add.existing(backBg);
-        const backText = this.add.text(0, 0, '← Back', {
-            color: HexText.white,
-            fontSize: `${FontSize.caption}px`,
-            fontFamily: 'sans-serif',
-            fontStyle: '600',
-        });
+        const backText = this.add.text(0, 0, '← Back',
+            textStyle({ size: FontSize.caption, color: HexText.white, weight: 'bold' }));
+        // Explicit 44×44 minimum per UI Design Rules: touch hit-zones must be
+        // at least 44×44 px. See state_sync_battle_scene.ts for the same
+        // rationale.
         const backBtn = this.rexUI.add
             .label({
+                width: 88,
+                height: 44,
                 background: backBg,
                 text: backText,
-                space: { left: Spacing.md, right: Spacing.md, top: Spacing.xs, bottom: Spacing.xs },
+                align: 'center',
+                space: { left: Spacing.md, right: Spacing.md },
             })
             .setInteractive({ useHandCursor: true });
         backBtn.on('pointerdown', () => {
@@ -125,8 +127,13 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             this.scene.stop('lockstep_sync_battle');
         });
 
-        const hudBg = new RoundRectangle(this, 0, 0, 2, 2, Radius.btn, Palette.cardBg, 0.92);
-        hudBg.setStrokeStyle(1, Palette.cardStroke, 1);
+        // Opaque white card, darker stroke, depth -1 so it never paints
+        // over the text / button children. See state_sync_battle_scene
+        // for why setDepth(-1) is needed despite rexUI Sizer's
+        // `addBackground()` (it only handles layout, not z-order).
+        const hudBg = new RoundRectangle(this, 0, 0, 2, 2, Radius.btn, Palette.cardBg, 1);
+        hudBg.setStrokeStyle(1.5, Palette.cardStroke, 1);
+        hudBg.setDepth(-1);
         this.add.existing(hudBg);
 
         this.hud = this.rexUI.add

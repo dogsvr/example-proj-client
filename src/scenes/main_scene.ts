@@ -1,16 +1,16 @@
 import Phaser from 'phaser';
 import type UIPlugin from 'phaser4-rex-plugins/templates/ui/ui-plugin.js';
 import RoundRectangle from 'phaser4-rex-plugins/plugins/roundrectangle.js';
-import { Palette, Radius, Spacing, FontSize, HexText, SceneBG, menuButtonWidth } from '../theme';
+import { Palette, Radius, Spacing, FontSize, HexText, SceneBG, menuButtonWidth, textStyle } from '../theme';
 import { paintGradientBackground } from '../ui/background';
 import { showRankDialog } from '../ui/rank_dialog';
-import { getLoggedInRole, queryRankList, registerBattleEndHandler, startBattle } from '../bootstrap';
+import { getLoggedInRole, onConnectionChange, queryRankList, registerBattleEndHandler, startBattle } from '../bootstrap';
 import { getPreloadScene } from './preload_scene';
 
 /**
  * Main menu scene. Layout is a vertical rexUI Sizer:
  *
- *   [role card]          <- top card: openId / zoneId / score
+ *   [role card]          <- top card: name / zoneId / score
  *   [menu buttons]       <- 3 big buttons: state battle / lockstep / rank
  *   [status]             <- bottom footer: connection dot + version
  *
@@ -23,7 +23,7 @@ export class MainScene extends Phaser.Scene {
     rexUI!: UIPlugin;
 
     private root!: any;
-    private roleIdText!: Phaser.GameObjects.Text;
+    private roleNameText!: Phaser.GameObjects.Text;
     private roleZoneText!: Phaser.GameObjects.Text;
     private roleScoreText!: Phaser.GameObjects.Text;
     private connectionDot!: Phaser.GameObjects.Arc;
@@ -39,6 +39,14 @@ export class MainScene extends Phaser.Scene {
         this.relayout();
 
         registerBattleEndHandler((ntf) => this.onBattleEnd(ntf));
+
+        // Wire the footer connection dot to real WebSocket state. The
+        // subscription fires synchronously with the current state, so the
+        // dot paints correctly on first enter even if login finished
+        // before this scene was created.
+        const unsubConn = onConnectionChange((connected) => {
+            this.drawConnectionDot(connected);
+        });
 
         this.cameras.main.fadeIn(250, 0xff, 0xff, 0xff);
 
@@ -60,6 +68,7 @@ export class MainScene extends Phaser.Scene {
             this.scale.off(Phaser.Scale.Events.RESIZE, onResize);
             this.events.off(Phaser.Scenes.Events.WAKE, refade);
             this.events.off(Phaser.Scenes.Events.RESUME, refade);
+            unsubConn();
         });
     }
 
@@ -94,25 +103,16 @@ export class MainScene extends Phaser.Scene {
         bg.setStrokeStyle(1, Palette.cardStroke, 1);
         this.add.existing(bg);
 
-        this.roleIdText = this.add.text(0, 0, `OpenId: ${role.openId ?? '--'}`, {
-            color: HexText.primary,
-            fontSize: `${FontSize.body}px`,
-            fontFamily: 'sans-serif',
-        });
-        this.roleZoneText = this.add.text(0, 0, `Zone:   ${role.zoneId ?? '--'}`, {
-            color: HexText.secondary,
-            fontSize: `${FontSize.body}px`,
-            fontFamily: 'sans-serif',
-        });
-        this.roleScoreText = this.add.text(0, 0, `Score:  ${role.score ?? 0}`, {
-            color: HexText.secondary,
-            fontSize: `${FontSize.body}px`,
-            fontFamily: 'sans-serif',
-        });
+        this.roleNameText = this.add.text(0, 0, `Name: ${role.name ?? '--'}`,
+            textStyle({ size: FontSize.body, color: HexText.primary, weight: 'semibold' }));
+        this.roleZoneText = this.add.text(0, 0, `Zone:   ${role.zoneId ?? '--'}`,
+            textStyle({ size: FontSize.body, color: HexText.sceneSecondary }));
+        this.roleScoreText = this.add.text(0, 0, `Score:  ${role.score ?? 0}`,
+            textStyle({ size: FontSize.body, color: HexText.sceneSecondary }));
 
         const textColumn = this.rexUI.add
             .sizer({ orientation: 'vertical', space: { item: Spacing.xs } })
-            .add(this.roleIdText, { align: 'left' })
+            .add(this.roleNameText, { align: 'left' })
             .add(this.roleZoneText, { align: 'left' })
             .add(this.roleScoreText, { align: 'left' });
 
@@ -164,12 +164,14 @@ export class MainScene extends Phaser.Scene {
             bg.setStrokeStyle(1, Palette.accent, 1);
         }
         this.add.existing(bg);
-        const labelText = this.add.text(0, 0, text, {
-            color: primary ? HexText.white : '#3498DB',
-            fontSize: `${FontSize.body}px`,
-            fontFamily: 'sans-serif',
-            fontStyle: '600',
-        });
+        // Button label sits on a solid-colored RoundRectangle (accent or
+        // white) — not on the gradient — so no shadow needed.
+        const labelText = this.add.text(0, 0, text,
+            textStyle({
+                size: FontSize.body,
+                color: primary ? HexText.white : '#3498DB',
+                weight: 'semibold',
+            }));
         const label = this.rexUI.add.label({
             width,
             height: 56,
@@ -189,11 +191,15 @@ export class MainScene extends Phaser.Scene {
         // Graphics in Phaser 4. Using `scene.add.circle()` gives us a real
         // GameObject with proper bounds out of the box.
         this.connectionDot = this.add.circle(0, 0, 5, Palette.success);
-        const versionText = this.add.text(0, 0, 'v0.1.0', {
-            color: HexText.secondary,
-            fontSize: `${FontSize.caption}px`,
-            fontFamily: 'sans-serif',
-        });
+        // Footer sits directly on the gradient background — use the deeper
+        // sceneSecondary colour and a subtle shadow to keep the caption-
+        // sized "v0.1.0" readable without ballooning the font size.
+        const versionText = this.add.text(0, 0, 'v0.1.0',
+            textStyle({
+                size: FontSize.caption,
+                color: HexText.sceneSecondary,
+                shadow: true,
+            }));
         return this.rexUI.add
             .sizer({
                 orientation: 'horizontal',
@@ -214,6 +220,20 @@ export class MainScene extends Phaser.Scene {
         if (!this.root) return;
         this.root.setMinSize(0, 0);
         this.root.layout();
+
+        // Landscape / short-height fallback (UI Design Rules §4). The vertical
+        // stack (role card + 3 × 56 px menu + footer + gaps) wants about
+        // 400 px of height to render without clipping. On short-height
+        // viewports — e.g. iPhone SE rotated to landscape (~320 px usable
+        // height), or desktop windows squashed tall-to-short — downscale the
+        // whole root instead of letting it bleed out of the viewport. No
+        // upscale: on tall viewports we'd rather the menu sit at its intrinsic
+        // size in the middle than balloon to fill the space.
+        const desiredH = 420;
+        const margin = Spacing.md * 2;
+        const scale = Math.min(1, (height - margin) / desiredH);
+        this.root.setScale(scale);
+
         this.root.setPosition(width / 2, height / 2);
     }
 
@@ -264,7 +284,8 @@ export class MainScene extends Phaser.Scene {
     private async onQueryRank() {
         try {
             const res = await queryRankList();
-            showRankDialog(this, res);
+            const role = getLoggedInRole() ?? this.registry.get('roleLocal') ?? {};
+            showRankDialog(this, res, role);
         } catch (e: any) {
             this.showToast(`Query rank failed: ${e?.message ?? e}`, true);
         }
@@ -273,7 +294,7 @@ export class MainScene extends Phaser.Scene {
     onBattleEnd(ntf: any) {
         const role = ntf.role ?? getLoggedInRole() ?? this.registry.get('roleLocal') ?? {};
         this.registry.set('roleLocal', role);
-        this.roleIdText.setText(`OpenId: ${role.openId ?? '--'}`);
+        this.roleNameText.setText(`Name: ${role.name ?? '--'}`);
         this.roleZoneText.setText(`Zone:   ${role.zoneId ?? '--'}`);
         this.roleScoreText.setText(`Score:  ${role.score ?? 0}`);
         this.showToast(`Battle ended\nScore change: ${ntf.scoreChange ?? 0}`);
@@ -295,10 +316,14 @@ export class MainScene extends Phaser.Scene {
             0.92,
         );
         this.add.existing(bg);
+        // Toast message sits on a solid (danger or primary-dark) rounded
+        // card — high contrast, no shadow needed.
         const text = this.add.text(0, 0, msg, {
-            color: HexText.white,
-            fontSize: `${FontSize.body}px`,
-            fontFamily: 'sans-serif',
+            ...textStyle({
+                size: FontSize.body,
+                color: HexText.white,
+                weight: 'semibold',
+            }),
             wordWrap: { width: toastWidth - Spacing.lg * 2 },
             align: 'left',
         });

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import UIPlugin from 'phaser4-rex-plugins/templates/ui/ui-plugin.js';
+import VirtualJoyStickPlugin from 'phaser4-rex-plugins/plugins/virtualjoystick-plugin.js';
 import { PreloadScene } from '../scenes/preload_scene';
 import { MainScene } from '../scenes/main_scene';
 
@@ -50,10 +51,20 @@ export function createGame(role: any) {
                 // rexUI is installed as a scene plugin: every scene gets
                 // `this.rexUI` for Sizer / Label / RoundRectangle / Toast.
                 { key: 'rexUI', plugin: UIPlugin, mapping: 'rexUI' },
+                // VirtualJoyStick: every scene can call
+                // `this.rexVirtualJoyStick.add(this, cfg)` to get a floating
+                // on-screen stick. Currently consumed only by
+                // state_sync_battle_scene; lockstep scene is untouched.
+                { key: 'rexVirtualJoyStick', plugin: VirtualJoyStickPlugin, mapping: 'rexVirtualJoyStick' },
             ],
         },
         scene: [PreloadScene, MainScene],
     };
+
+    // Phaser 4 removed the game-level `resolution` field that existed in
+    // Phaser 3; crisp Text rasterization is now handled per-Text via the
+    // `resolution` field of each TextStyle. See `textStyle()` in theme.ts —
+    // all Text objects go through that helper and pick up a capped DPR.
 
     const game = new Phaser.Game(config);
     game.registry.set('roleLocal', role);

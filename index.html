@@ -32,11 +32,16 @@
         body {
             margin: 0;
             padding: 0;
-            height: 100%;
+            min-height: 100%;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: var(--text-primary);
             background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bot) 100%);
-            overflow: hidden;
+            background-attachment: fixed;
+            /* Do NOT put overflow:hidden on body. iOS Safari brings up the
+               soft keyboard on input focus and shrinks visualViewport; if the
+               body can't scroll, the login card and its #login-error line get
+               pinned off-screen with no way to reach them. The canvas mount
+               point (#game) is the one that must clip — see its rule below. */
         }
 
         body {
@@ -44,6 +49,19 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            /* iOS Safari address-bar-aware height. `100dvh` follows the
+               dynamic viewport; a matching `100vh` fallback keeps older
+               browsers sane. */
+            min-height: 100dvh;
+            /* Honor the iOS / Android notch & home-indicator areas. `viewport-fit=cover`
+               alone only authorizes painting into those regions — nothing
+               shifts until you read back `env(safe-area-inset-*)`. */
+            padding:
+                max(16px, env(safe-area-inset-top))
+                max(16px, env(safe-area-inset-right))
+                max(16px, env(safe-area-inset-bottom))
+                max(16px, env(safe-area-inset-left));
+            box-sizing: border-box;
         }
 
         /* ---------- Login card (shown first-paint) ---------- */
@@ -152,7 +170,7 @@
             text-align: center;
         }
 
-        /* ---------- Initial loading spinner (shown before bootstrap resolves) ---------- */
+        /* ---------- Loading overlay (shown on first paint + during login→Phaser handoff) ---------- */
 
         #app-loading {
             position: fixed;
@@ -162,9 +180,23 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 16px;
+            gap: 12px;
             color: var(--text-secondary);
             font-size: 14px;
+            /* Paint our own gradient background so Phaser's first frame sees
+               a matching canvas behind it; without this the overlay would
+               be transparent and the white/HTML background would bleed in
+               during the fade-out transition. */
+            background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bot) 100%);
+            /* Fade out via opacity once Phaser is ready. pointer-events=none
+               after the fade so clicks pass through to the canvas. */
+            opacity: 1;
+            transition: opacity 220ms ease;
+        }
+
+        #app-loading.is-fading {
+            opacity: 0;
+            pointer-events: none;
         }
 
         #app-loading .spinner {
@@ -176,10 +208,32 @@
             animation: spin 0.8s linear infinite;
         }
 
+        #app-loading #app-loading-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        #app-loading #app-loading-detail {
+            font-size: 13px;
+            color: var(--text-secondary);
+            min-height: 18px;
+            text-align: center;
+            max-width: min(320px, calc(100% - 32px));
+            /* Hint at hard-to-spot progress: even when the text doesn't
+               change, this slow pulse says "something is still happening". */
+            animation: pulse 1.6s ease-in-out infinite;
+        }
+
         @keyframes spin {
             to {
                 transform: rotate(360deg);
             }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.55; }
+            50%      { opacity: 1; }
         }
 
         /* ---------- Phaser canvas mount ---------- */
@@ -190,6 +244,11 @@
             width: 100%;
             height: 100%;
             z-index: 1;
+            /* Clip the canvas to the viewport here (instead of on body) so
+               the body can still scroll while the login form is visible.
+               Once Phaser mounts, #game covers the screen; scroll on body
+               becomes moot because there's nothing else to scroll to. */
+            overflow: hidden;
             /* Until Phaser mounts a canvas, this container has no visual
                content and must not absorb clicks meant for the login card. */
             pointer-events: none;
@@ -216,10 +275,18 @@
 </head>
 
 <body>
-    <!-- Shown on first paint; hidden by bootstrap.ts once zone list arrives. -->
+    <!--
+      Loading overlay: shown on first paint (before zone list arrives),
+      hidden while the login card is interactive, then re-shown between
+      "submit login" and "Phaser's first frame painted" so the user never
+      sees a blank screen during the 2.5 MB game-bundle download.
+      `bootstrap.ts` drives the lifecycle via `showLoading()` /
+      `setLoadingText()` / `hideLoading()`.
+    -->
     <div id="app-loading">
         <div class="spinner"></div>
-        <div>Connecting…</div>
+        <div id="app-loading-title">Connecting…</div>
+        <div id="app-loading-detail">Fetching zone list</div>
     </div>
 
     <!-- Login card: hidden initially, revealed after bootstrap.ts fetches zone list. -->
@@ -228,16 +295,13 @@
         <form id="login">
             <ul>
                 <li>
-                    <label for="openid">OpenId</label>
-                    <input type="text" id="openid" autocomplete="username"
-                        placeholder="A unique string identifying you" />
+                    <label for="name">Name</label>
+                    <input type="text" id="name" autocomplete="nickname"
+                        maxlength="32" placeholder="Your display name" />
                 </li>
                 <li>
                     <label for="zoneid">Zone</label>
                     <select id="zoneid"></select>
-                    <small>To add a new zone, run in mongo shell:
-                        <code>use dogsvr-example-proj; db.zone_coll.insertOne({zoneId:100001})</code>
-                    </small>
                 </li>
                 <li>
                     <button type="submit">Login</button>

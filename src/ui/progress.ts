@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Palette, Radius, HexText } from '../theme';
+import { Palette, Radius, HexText, textStyle } from '../theme';
 
 /**
  * Lightweight progress-bar overlay that doesn't depend on rexUI.
@@ -32,11 +32,12 @@ export class ProgressOverlay {
             .setOrigin(0, 0);
         this.track = scene.add.graphics();
         this.label = scene.add
-            .text(0, 0, 'Loading 0%', {
-                color: HexText.white,
-                fontSize: '16px',
-                fontFamily: 'sans-serif',
-            })
+            // Overlay sits on a 55%-opacity dark backdrop — white + semibold
+            // at 16 px is already high-contrast; no shadow needed. Route
+            // through textStyle() so the text inherits the DPR resolution
+            // that keeps it crisp on HiDPI screens.
+            .text(0, 0, 'Loading 0%',
+                textStyle({ size: 16, color: HexText.white, weight: 'semibold' }))
             .setOrigin(0.5, 0.5);
 
         this.root.add([this.backdrop, this.track, this.label]);
