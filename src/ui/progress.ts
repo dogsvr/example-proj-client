@@ -2,17 +2,8 @@ import Phaser from 'phaser';
 import { Palette, Radius, HexText, textStyle } from '../theme';
 
 /**
- * Lightweight progress-bar overlay that doesn't depend on rexUI.
- *
- * We'd normally reach for rexUI's `NumberBar`, but `ProgressOverlay` is used
- * by the *first* scene we enter (PreloadScene) to cover the moment between
- * "user clicked Login" and "Phaser finished booting up MainScene". We want
- * that overlay to be visible while the main Phaser/rexUI bundle is still
- * being downloaded — the overlay itself must only depend on core Phaser.
- *
- * Call `.show()` to display, `.setProgress(0..1)` to update, `.hide()` to
- * fade out. The overlay is a Container pinned to (0,0) and sized to the full
- * camera; it redraws on resize.
+ * Progress-bar overlay that doesn't depend on rexUI — used by the *first*
+ * scene (PreloadScene) while rexUI may still be downloading.
  */
 export class ProgressOverlay {
     private scene: Phaser.Scene;
@@ -32,10 +23,6 @@ export class ProgressOverlay {
             .setOrigin(0, 0);
         this.track = scene.add.graphics();
         this.label = scene.add
-            // Overlay sits on a 55%-opacity dark backdrop — white + semibold
-            // at 16 px is already high-contrast; no shadow needed. Route
-            // through textStyle() so the text inherits the DPR resolution
-            // that keeps it crisp on HiDPI screens.
             .text(0, 0, 'Loading 0%',
                 textStyle({ size: 16, color: HexText.white, weight: 'semibold' }))
             .setOrigin(0.5, 0.5);
@@ -93,10 +80,8 @@ export class ProgressOverlay {
         const x = (width - barWidth) / 2;
         const y = height / 2;
         this.track.clear();
-        // Track background.
         this.track.fillStyle(0xffffff, 0.25);
         this.track.fillRoundedRect(x, y, barWidth, barHeight, Radius.btn / 2);
-        // Fill.
         this.track.fillStyle(Palette.accent, 1);
         this.track.fillRoundedRect(x, y, barWidth * this.current, barHeight, Radius.btn / 2);
     }

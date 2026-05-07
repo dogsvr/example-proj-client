@@ -8,12 +8,7 @@
         content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>dogsvr Example</title>
     <style>
-        /*
-         * First-paint CSS is inlined here deliberately. An external stylesheet
-         * would cost an extra HTTP round-trip before the login card becomes
-         * interactive, and the CSS is small enough (~2 KB) that inlining
-         * beats the cache win on repeat visits.
-         */
+        /* Inlined first-paint CSS to avoid a stylesheet round-trip. */
         :root {
             --bg-top: #F5F7FA;
             --bg-bot: #E4ECF7;
@@ -37,11 +32,8 @@
             color: var(--text-primary);
             background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bot) 100%);
             background-attachment: fixed;
-            /* Do NOT put overflow:hidden on body. iOS Safari brings up the
-               soft keyboard on input focus and shrinks visualViewport; if the
-               body can't scroll, the login card and its #login-error line get
-               pinned off-screen with no way to reach them. The canvas mount
-               point (#game) is the one that must clip — see its rule below. */
+            /* No overflow:hidden on body: iOS Safari shrinks visualViewport on
+               soft-keyboard open, which would pin the login card off-screen. */
         }
 
         body {
@@ -49,13 +41,9 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            /* iOS Safari address-bar-aware height. `100dvh` follows the
-               dynamic viewport; a matching `100vh` fallback keeps older
-               browsers sane. */
+            /* iOS Safari address-bar-aware height; 100vh keeps older browsers sane. */
             min-height: 100dvh;
-            /* Honor the iOS / Android notch & home-indicator areas. `viewport-fit=cover`
-               alone only authorizes painting into those regions — nothing
-               shifts until you read back `env(safe-area-inset-*)`. */
+            /* viewport-fit=cover authorizes painting into the notch; env(safe-area-inset-*) fills it. */
             padding:
                 max(16px, env(safe-area-inset-top))
                 max(16px, env(safe-area-inset-right))
@@ -64,12 +52,10 @@
             box-sizing: border-box;
         }
 
-        /* ---------- Login card (shown first-paint) ---------- */
+        /* ---------- Login card ---------- */
 
         .card {
-            /* Login card must sit above #game (which is position:fixed covering
-               the viewport), otherwise the empty #game div intercepts all
-               pointer events and the form becomes untouchable. */
+            /* Must sit above #game (position:fixed) or the empty #game div eats pointer events. */
             position: relative;
             z-index: 20;
             width: min(380px, calc(100% - 32px));
@@ -112,8 +98,7 @@
             width: 100%;
             min-height: 44px;
             padding: 0 12px;
-            font-size: 16px;
-            /* 16px prevents iOS Safari from auto-zooming on focus. */
+            font-size: 16px; /* 16px prevents iOS Safari auto-zoom on focus. */
             border: 1px solid var(--card-stroke);
             border-radius: var(--radius-btn);
             background: #fff;
@@ -170,7 +155,7 @@
             text-align: center;
         }
 
-        /* ---------- Loading overlay (shown on first paint + during login→Phaser handoff) ---------- */
+        /* ---------- Loading overlay ---------- */
 
         #app-loading {
             position: fixed;
@@ -183,13 +168,8 @@
             gap: 12px;
             color: var(--text-secondary);
             font-size: 14px;
-            /* Paint our own gradient background so Phaser's first frame sees
-               a matching canvas behind it; without this the overlay would
-               be transparent and the white/HTML background would bleed in
-               during the fade-out transition. */
+            /* Same gradient as the body so Phaser's first frame matches during fade. */
             background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bot) 100%);
-            /* Fade out via opacity once Phaser is ready. pointer-events=none
-               after the fade so clicks pass through to the canvas. */
             opacity: 1;
             transition: opacity 220ms ease;
         }
@@ -220,15 +200,12 @@
             min-height: 18px;
             text-align: center;
             max-width: min(320px, calc(100% - 32px));
-            /* Hint at hard-to-spot progress: even when the text doesn't
-               change, this slow pulse says "something is still happening". */
+            /* Slow pulse signals "still working" even when text doesn't change. */
             animation: pulse 1.6s ease-in-out infinite;
         }
 
         @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+            to { transform: rotate(360deg); }
         }
 
         @keyframes pulse {
@@ -244,13 +221,9 @@
             width: 100%;
             height: 100%;
             z-index: 1;
-            /* Clip the canvas to the viewport here (instead of on body) so
-               the body can still scroll while the login form is visible.
-               Once Phaser mounts, #game covers the screen; scroll on body
-               becomes moot because there's nothing else to scroll to. */
+            /* Clip canvas here rather than on body, which must still scroll for the login form. */
             overflow: hidden;
-            /* Until Phaser mounts a canvas, this container has no visual
-               content and must not absorb clicks meant for the login card. */
+            /* Before Phaser mounts, #game is empty; don't let it absorb clicks. */
             pointer-events: none;
         }
 
@@ -268,28 +241,20 @@
 
             .card small {
                 display: none;
-                /* Keep the card compact on very narrow screens. */
             }
         }
     </style>
 </head>
 
 <body>
-    <!--
-      Loading overlay: shown on first paint (before zone list arrives),
-      hidden while the login card is interactive, then re-shown between
-      "submit login" and "Phaser's first frame painted" so the user never
-      sees a blank screen during the 2.5 MB game-bundle download.
-      `bootstrap.ts` drives the lifecycle via `showLoading()` /
-      `setLoadingText()` / `hideLoading()`.
-    -->
+    <!-- Loading overlay: first paint, then again during the game-bundle download. -->
     <div id="app-loading">
         <div class="spinner"></div>
         <div id="app-loading-title">Connecting…</div>
         <div id="app-loading-detail">Fetching zone list</div>
     </div>
 
-    <!-- Login card: hidden initially, revealed after bootstrap.ts fetches zone list. -->
+    <!-- Login card: hidden initially, revealed after bootstrap fetches zones. -->
     <div id="login-card" class="card" style="display: none;">
         <h1>dogsvr Example</h1>
         <form id="login">
@@ -297,7 +262,7 @@
                 <li>
                     <label for="name">Name</label>
                     <input type="text" id="name" autocomplete="nickname"
-                        maxlength="32" placeholder="Your display name" />
+                        maxlength="12" placeholder="Up to 6 characters" />
                 </li>
                 <li>
                     <label for="zoneid">Zone</label>
@@ -311,10 +276,10 @@
         </form>
     </div>
 
-    <!-- Phaser canvas mount point; Phaser.Game constructor takes parent: 'game'. -->
+    <!-- Phaser canvas mount; Phaser.Game constructor takes parent: 'game'. -->
     <div id="game"></div>
 
-    <!-- Entry script: dynamically imports bootstrap, which lazy-loads Phaser. -->
+    <!-- Entry: dynamic-imports bootstrap, which lazy-loads Phaser. -->
     <script src="src/index.ts" type="module"></script>
 </body>
 

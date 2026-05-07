@@ -10,30 +10,14 @@ import type {
     ZoneBattleEndNtf,
 } from 'example-proj/protocols/cmd_proto';
 import { composeOpenId, getDeviceId } from './util/device_id';
+import { NAME_MAX_CHARS } from './util/name_truncate';
 
 /**
- * First-paint bootstrap.
- *
- * This module is the ONLY thing the user sees and downloads before clicking
- * Login. It deliberately does NOT import Phaser / rexUI / Colyseus / Matter —
- * those are dynamically imported in `loadGameBundle()` after the user submits
- * the login form. That cuts the first-paint JS from ~2 MB (Phaser + friends)
- * down to tsrpc-browser + this file.
- *
- * The DOM login form in `index.html` stays as real `<form>` / `<input>` /
- * `<select>` elements: browsers handle IME, autofill, password managers and
- * mobile keyboards correctly for free. There's no benefit to re-implementing
- * those in Phaser.
+ * First-paint bootstrap. Deliberately does NOT import Phaser/rexUI/Colyseus —
+ * those are dynamically imported after login to keep first-paint JS small.
  */
 
-// --- Module-level state shared with the game bundle -------------------------
-//
-// Once the game bundle is loaded, it reaches back into this module via the
-// exported `zoneClient` / `loggedInRole` and calls `startBattle()` /
-// `queryRankList()`. Keeping these in bootstrap (not in a Phaser scene) means
-// the WebSocket connection survives scene switches and remains the single
-// source of truth for server-push messages.
-
+// Module-level so the WsClient survives scene switches.
 let zoneClient: WsClient<typeof serviceProto> | null = null;
 let loggedInRole: any = null;
 let onBattleEndHandler: ((ntf: ZoneBattleEndNtf) => void) | null = null;
@@ -46,33 +30,9 @@ export function getLoggedInRole() {
     return loggedInRole;
 }
 
-// --- Connection status observation ----------------------------------------
-//
-// Surface zoneClient's connected/disconnected state so scenes can light up a
-// status indicator without having to import tsrpc internals. We combine
-// three signals:
-//
-//   1. tsrpc `postConnectFlow` / `postDisconnectFlow` — the authoritative
-//      source once the WebSocket transitions happen. Covers server crash,
-//      network drop, middleware idle-kill, explicit `client.disconnect()`.
-//
-//   2. `window.online` / `window.offline` — the browser knows the OS-level
-//      NIC went down (Wi-Fi off, airplane mode) before the ws `close` event
-//      has a chance to fire through the TCP layer. We flip to "disconnected"
-//      immediately on `offline` and re-verify against `zoneClient.isConnected`
-//      on `online`.
-//
-//   3. `document.visibilitychange` — when the tab becomes visible after
-//      being hidden (phone lock → unlock, tab switch back), the underlying
-//      TCP connection may be broken but the `close` event not yet delivered.
-//      We re-read `zoneClient.isConnected` on `visible` to paint whichever
-//      state is current right now. We do NOT flip to disconnected on
-//      `hidden` — the connection is usually fine, and flickering the dot
-//      red the moment the user locks the screen is noise.
-//
-// Exposes a simple listener contract: every listener is invoked once
-// synchronously with the current state when it subscribes (so late
-// subscribers don't have to poll), then again on every change.
+// --- Connection status ----------------------------------------------------
+// Merges tsrpc flows + window online/offline + visibilitychange. Never flips
+// to disconnected on `hidden` (lock screen would flicker red).
 
 type ConnectionListener = (connected: boolean) => void;
 
@@ -81,63 +41,36 @@ let connectionState = false;
 
 function readLiveConnected(): boolean {
     if (!zoneClient) return false;
-    // navigator.onLine can be stale on some platforms, but when it reports
-    // offline it's authoritative for our purposes: even if the WebSocket
-    // object still thinks it's open, the OS has torn down the NIC.
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    // navigator.onLine false is authoritative; true can be stale.
+    if (navigator.onLine === false) return false;
     return zoneClient.isConnected;
 }
 
 function updateConnectionState(next: boolean) {
     if (next === connectionState) return;
     connectionState = next;
-    // Copy the set before iterating so a listener that unsubscribes itself
-    // inside the callback doesn't skip the next listener.
+    // Copy before iterating: listeners may unsubscribe themselves.
     for (const l of [...connectionListeners]) {
         try { l(next); } catch (e) { console.error('connection listener threw', e); }
     }
 }
 
-/**
- * Subscribe to connection-status changes. The listener is invoked
- * immediately with the current state, then on every subsequent change.
- * Returns an unsubscribe function.
- */
+/** Subscribe to connection changes. Fires immediately with current state. Returns unsubscribe. */
 export function onConnectionChange(listener: ConnectionListener): () => void {
     connectionListeners.add(listener);
-    // Re-read instead of trusting `connectionState`, in case window events
-    // fired while no scene was listening.
     const live = readLiveConnected();
     if (live !== connectionState) connectionState = live;
     listener(connectionState);
     return () => { connectionListeners.delete(listener); };
 }
 
-// Browser-level signals. Registered once at module load; safe because the
-// client is loaded inside a browser tab. In SSR there's no `window`, so
-// the typeof guards keep the module importable.
-if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => {
-        updateConnectionState(readLiveConnected());
-    });
-    window.addEventListener('offline', () => {
-        updateConnectionState(false);
-    });
-}
-if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
-            // Re-sync on resume; a WebSocket close that arrived during the
-            // hidden interval already updated connectionState via
-            // postDisconnectFlow, but reading the live state here also
-            // catches the rarer case where the socket is still technically
-            // open but navigator.onLine turned false while hidden.
-            updateConnectionState(readLiveConnected());
-        }
-    });
-}
+window.addEventListener('online', () => updateConnectionState(readLiveConnected()));
+window.addEventListener('offline', () => updateConnectionState(false));
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) updateConnectionState(readLiveConnected());
+});
 
-// --- Zone list / login ------------------------------------------------------
+// --- Zone list / login ----------------------------------------------------
 
 async function getZoneList(): Promise<DirQueryZoneListRes | null> {
     const dirClient = new HttpClient(serviceProto, {
@@ -159,9 +92,7 @@ async function zoneLogin(openId: string, zoneId: number, name: string): Promise<
     zoneClient = new WsClient(serviceProto, {
         server: `ws://${window.location.hostname}:20000`,
     });
-    // Hook tsrpc's lifecycle flows BEFORE connect() so we don't miss the
-    // postConnect notification. Both flows are mutation-style pipelines:
-    // return the unchanged `v` to let the flow continue normally.
+    // Hook flows before connect() so postConnect isn't missed.
     zoneClient.flows.postConnectFlow.push((v) => {
         updateConnectionState(readLiveConnected());
         return v;
@@ -187,7 +118,6 @@ async function zoneLogin(openId: string, zoneId: number, name: string): Promise<
     const res = JSON.parse(ret.res.innerRes as string) as ZoneLoginRes;
     loggedInRole = res.role;
 
-    // Bind server-push listener; forwarded to the game bundle after it loads.
     zoneClient.listenMsg('Common', (msg: MsgCommon) => {
         if (msg.head.cmdId === cmdId.ZONE_BATTLE_END_NTF) {
             const ntf: ZoneBattleEndNtf = JSON.parse(msg.innerMsg as string);
@@ -199,61 +129,44 @@ async function zoneLogin(openId: string, zoneId: number, name: string): Promise<
     return res;
 }
 
-// --- Game-side API surface (invoked by scenes after they load) -------------
+// --- Game-side API (invoked by scenes) ------------------------------------
 
-export async function startBattle(syncType: string) {
-    if (!zoneClient || !loggedInRole) {
-        throw new Error('startBattle called before login');
-    }
+/** Shared Common-cmd RPC helper for zone calls. */
+async function callZone<TReq, TRes>(cmd: number, req: TReq): Promise<TRes> {
+    if (!zoneClient || !loggedInRole) throw new Error('callZone before login');
+    const ret = await zoneClient.callApi('Common', {
+        head: { cmdId: cmd, openId: loggedInRole.openId, zoneId: loggedInRole.zoneId },
+        innerReq: JSON.stringify(req),
+    });
+    if (!ret.isSucc) throw new Error(ret.err.message);
+    return JSON.parse(ret.res.innerRes as string) as TRes;
+}
+
+export function startBattle(syncType: string) {
     const req: ZoneStartBattleReq = { syncType };
-    const ret = await zoneClient.callApi('Common', {
-        head: {
-            cmdId: cmdId.ZONE_START_BATTLE,
-            openId: loggedInRole.openId,
-            zoneId: loggedInRole.zoneId,
-        },
-        innerReq: JSON.stringify(req),
-    });
-    if (!ret.isSucc) {
-        throw new Error(ret.err.message);
-    }
-    return JSON.parse(ret.res.innerRes as string) as ZoneStartBattleRes;
+    return callZone<ZoneStartBattleReq, ZoneStartBattleRes>(cmdId.ZONE_START_BATTLE, req);
 }
 
-export async function queryRankList() {
-    if (!zoneClient || !loggedInRole) {
-        throw new Error('queryRankList called before login');
-    }
+export function queryRankList() {
     const req: ZoneQueryRankListReq = { rankId: 1, offset: 0, count: 100 };
-    const ret = await zoneClient.callApi('Common', {
-        head: {
-            cmdId: cmdId.ZONE_QUERY_RANK_LIST,
-            openId: loggedInRole.openId,
-            zoneId: loggedInRole.zoneId,
-        },
-        innerReq: JSON.stringify(req),
-    });
-    if (!ret.isSucc) {
-        throw new Error(ret.err.message);
-    }
-    return JSON.parse(ret.res.innerRes as string) as ZoneQueryRankListRes;
+    return callZone<ZoneQueryRankListReq, ZoneQueryRankListRes>(cmdId.ZONE_QUERY_RANK_LIST, req);
 }
 
-// --- Login form wiring + deferred game bundle load -------------------------
+// --- Login form wiring + deferred game bundle load ------------------------
 
-/**
- * DOM overlay helpers.
- *
- * The `#app-loading` div lives in index.html. It's:
- *   - Shown on first paint (before zone list is fetched).
- *   - Hidden once the login card becomes interactive.
- *   - Re-shown on login submit and kept up through the *entire* game-bundle
- *     download. The bundle is ~2.5 MB on the wire; on slow networks that
- *     window is measured in seconds-to-minutes and MUST have positive
- *     feedback rather than a blank white screen.
- *   - Faded out only after Phaser has painted its first frame — see the
- *     `dogsvr:phaser-ready` event dispatched from PreloadScene.
- */
+// Idempotent prefetch of the Phase B chunk. Kicked after the login card is
+// painted so the ~1–3 MB download overlaps with the user reading/typing,
+// instead of starting only after the submit click.
+let gameBundlePromise: Promise<typeof import('./game/boot')> | null = null;
+function prefetchGameBundle() {
+    if (!gameBundlePromise) {
+        gameBundlePromise = import('./game/boot');
+        // Drop the rejection so a transient failure doesn't poison later retries.
+        gameBundlePromise.catch(() => { gameBundlePromise = null; });
+    }
+    return gameBundlePromise;
+}
+
 function showLoading(title: string, detail: string) {
     const overlay = document.getElementById('app-loading');
     if (overlay) {
@@ -277,36 +190,13 @@ function setLoadingDetail(detail: string) {
 function hideLoading() {
     const overlay = document.getElementById('app-loading');
     if (!overlay) return;
-    // Add the fade class; the 220 ms CSS transition runs, then we hide
-    // completely so the element stops taking any paint work. `transitionend`
-    // would be cleaner but bails silently if opacity is already 0, so we
-    // use a timer matched to the transition duration.
+    // Fade via CSS, then hide. Timer matches the 220ms transition.
     overlay.classList.add('is-fading');
-    window.setTimeout(() => {
-        overlay.style.display = 'none';
-    }, 260);
-}
-
-/**
- * Kick off the dynamic import for the Phaser bundle. Returns the module
- * promise so callers can await it once they need `createGame`.
- *
- * The import is intentionally *triggered* before we know the login will
- * succeed — chunk download is by far the dominant cost on slow networks
- * (2.5 MB vs. a ~1 KB login RPC), so overlapping the two saves real time
- * on fast networks and hurts nothing on slow ones (we were going to pay
- * the download cost anyway). If login later fails, the already-downloaded
- * chunk simply sits in the browser cache for the next attempt.
- */
-function prefetchGameBundle(): Promise<typeof import('./game/boot')> {
-    return import('./game/boot');
+    window.setTimeout(() => { overlay.style.display = 'none'; }, 260);
 }
 
 export async function start() {
     const loginCard = document.getElementById('login-card');
-    // Update the initial spinner's text while the zone list is being fetched;
-    // on slow DNS / first-contact this is the one meaningful feedback the
-    // user has.
     setLoadingDetail('Fetching zone list');
     const res = await getZoneList();
     hideLoading();
@@ -314,8 +204,7 @@ export async function start() {
 
     const zoneidSelect = document.querySelector<HTMLSelectElement>('select#zoneid');
     if (res && zoneidSelect) {
-        // Clear any existing options (re-running during HMR).
-        zoneidSelect.innerHTML = '';
+        zoneidSelect.innerHTML = ''; // clear stale options on HMR
         for (const zone of res.zoneList) {
             const opt = document.createElement('option');
             opt.value = String(zone.zoneId);
@@ -327,9 +216,7 @@ export async function start() {
     const nameInput = document.querySelector<HTMLInputElement>('input#name');
     const form = document.querySelector<HTMLFormElement>('form#login');
     const errorEl = document.getElementById('login-error');
-    // Parcel's HTML minifier strips `type="submit"` because it's the default
-    // for `<button>` inside a `<form>`, so a `button[type="submit"]` selector
-    // fails in production builds. Just grab the first button inside the form.
+    // Parcel's minifier strips default `type="submit"`; pick first button instead.
     const submitBtn = form?.querySelector<HTMLButtonElement>('button');
 
     if (!nameInput || !zoneidSelect || !form || !submitBtn) {
@@ -338,16 +225,24 @@ export async function start() {
             zoneidSelect: !!zoneidSelect,
             form: !!form,
             submitBtn: !!submitBtn,
-            loginCardInDom: !!document.getElementById('login-card'),
-            bodyHTMLLen: document.body?.innerHTML.length,
         });
         return;
     }
 
-    // PreloadScene dispatches this once its first frame has rendered (see
-    // preload_scene.ts). Register the listener now so we don't miss it if
-    // Phaser finishes extremely fast on a warm cache.
+    // PreloadScene dispatches this once its first frame renders.
     window.addEventListener('dogsvr:phaser-ready', () => hideLoading(), { once: true });
+
+    // Login card is now visible → first paint is done. Warm up the Phase B
+    // chunk in the background so the ~1–3 MB of Phaser + rexUI overlaps with
+    // the user reading the form, not the "Entering game…" wait. Uses
+    // requestIdleCallback when available to yield to any pending main-thread
+    // work; falls back to setTimeout(0) on Safari.
+    const kickPrefetch = () => { void prefetchGameBundle(); };
+    if (typeof (window as any).requestIdleCallback === 'function') {
+        (window as any).requestIdleCallback(kickPrefetch, { timeout: 2000 });
+    } else {
+        window.setTimeout(kickPrefetch, 0);
+    }
 
     form.onsubmit = async (event) => {
         event.preventDefault();
@@ -356,28 +251,27 @@ export async function start() {
             if (errorEl) errorEl.textContent = 'Please enter a name.';
             return;
         }
-        // openId is assembled from a persistent per-browser device id plus the
-        // display name. The user never sees this; it only exists so MongoDB
-        // has a stable primary key that doesn't collide with other devices
-        // happening to pick the same name. See util/device_id.ts.
+        // Count code points (1 CJK = 1); `name.length` is UTF-16 units and
+        // would over-count surrogate-pair emoji.
+        if (Array.from(name).length > NAME_MAX_CHARS) {
+            if (errorEl) errorEl.textContent = `Name must be ${NAME_MAX_CHARS} characters or fewer.`;
+            return;
+        }
+        // openId = deviceId + name, stable across same-name collisions on other devices.
         const openId = composeOpenId(getDeviceId(), name);
         if (errorEl) errorEl.textContent = '';
         submitBtn.disabled = true;
         submitBtn.textContent = 'Loading...';
 
-        // IMPORTANT: show the overlay BEFORE hiding the login card. If you
-        // hide the card first and then show the overlay the user sees a
-        // flash of blank viewport (gradient only) between the two DOM
-        // mutations — small but noticeable, especially on slow devices.
+        // Show overlay BEFORE hiding the card — reverse order flashes blank.
         showLoading('Signing in…', 'Contacting server');
         if (loginCard) loginCard.style.display = 'none';
 
-        // Fire the game-bundle download NOW, in parallel with the login RPC.
-        // See prefetchGameBundle() for the rationale.
+        // Surface bundle-fetch failure to the overlay; the await below will still catch it.
+        // Reuses the prefetched promise when available — falls back to a fresh
+        // import() if prefetch never ran or failed.
         const bundlePromise = prefetchGameBundle();
-        // Log and surface any network error on the bundle fetch so the user
-        // doesn't stare at a stuck spinner forever.
-        bundlePromise.catch((err) => {
+        bundlePromise.then(undefined, (err) => {
             console.error('game bundle fetch failed', err);
             setLoadingTitle('Download failed');
             setLoadingDetail('Check your network and refresh.');
@@ -389,23 +283,14 @@ export async function start() {
                 if (errorEl) errorEl.textContent = 'Login failed. Check console for details.';
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Login';
-                // Return the user to the login card — but keep bundlePromise
-                // alive in the background so a retry reuses the cached chunk.
                 if (loginCard) loginCard.style.display = '';
                 hideLoading();
                 return;
             }
 
-            // Login succeeded. Depending on network speed, the bundle may
-            // already be resolved (fast link) or still downloading (slow).
-            // Either way, await it now and let the overlay keep the user
-            // informed.
             setLoadingTitle('Entering game…');
             setLoadingDetail('Loading game assets');
             const mod = await bundlePromise;
-            // The Phaser.Game constructor boots PreloadScene immediately;
-            // PreloadScene's create() fires `dogsvr:phaser-ready` after the
-            // first frame, which the listener above turns into hideLoading().
             mod.createGame(loginRes.role);
         } catch (e: any) {
             if (errorEl) errorEl.textContent = e?.message ?? String(e);
