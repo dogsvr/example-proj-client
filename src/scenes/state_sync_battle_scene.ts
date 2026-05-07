@@ -5,10 +5,13 @@ import type VirtualJoyStick from 'phaser4-rex-plugins/plugins/virtualjoystick.js
 import { Room, Client, getStateCallbacks } from '@colyseus/sdk';
 import { FontSize, HexText, Palette, Spacing, SceneBG, textStyle } from '../theme';
 import { paintGradientBackground } from '../ui/background';
+import { paintArenaBoundary } from '../ui/arena_boundary';
 import { createBattleHud, type BattleHud } from '../ui/battle_hud';
 
 // Mirror of server-side constants (see state_sync_battle_room.ts).
 // Only the values the client has to reason about locally live here.
+const MAP_W = 800;
+const MAP_H = 1200;
 const INVULN_DURATION = 2500;     // must match server
 const PLAYER_SIZE = 20;
 const BALL_RADIUS = 5;
@@ -99,7 +102,8 @@ export class StateSyncBattleScene extends Phaser.Scene {
         this.joystickPointerId = null;
         this.selfInvulnEndsAt = 0;
 
-        paintGradientBackground(this, SceneBG.state.top, SceneBG.state.bottom);
+        paintGradientBackground(this, SceneBG.state.top, SceneBG.state.bottom,
+            { width: MAP_W, height: MAP_H });
         this.hud = createBattleHud(this, () => {
             this.scene.switch('main');
             this.scene.stop('state_sync_battle');
@@ -115,6 +119,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
         this.room.onStateChange.once((state) => {
             if (this.isShuttingDown) return;
             this.cameras.main.setBounds(0, 0, state.mapWidth, state.mapHeight);
+            paintArenaBoundary(this, state.mapWidth, state.mapHeight);
             const $ = getStateCallbacks(this.room);
 
             $(state.players).onAdd((player, sessionId) => this.onPlayerAdd(player, sessionId, $));

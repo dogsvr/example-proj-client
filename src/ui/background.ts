@@ -3,23 +3,37 @@ import Phaser from 'phaser';
 /**
  * Scene background: interpolated-slab vertical gradient + drifting shapes.
  * Tweens persist across resizes; redraw only repositions the graphics.
+ *
+ * Pass `worldSize` when the scene has a scrolling camera (battle scenes):
+ * the gradient stays screen-pinned (covers the viewport no matter where
+ * the camera is) but the decorations move into world space and scatter
+ * across the full map so the player gets a visible motion cue as the
+ * camera follows them. Without worldSize, everything is screen-pinned
+ * (correct for static scenes like the main menu).
  */
 export function paintGradientBackground(
     scene: Phaser.Scene,
     topColor: number,
     bottomColor: number,
+    worldSize?: { width: number; height: number },
 ): { gradient: Phaser.GameObjects.Graphics; decorations: Phaser.GameObjects.Graphics[] } {
     const gradient = scene.add.graphics();
     gradient.setDepth(-1000);
     gradient.setScrollFactor(0);
 
-    const N = 18;
+    // Scale decoration count with world area so on-screen density stays
+    // similar — a 800×1200 world covers ~3× a typical portrait viewport.
+    const N = worldSize ? 36 : 18;
     const decorations: Phaser.GameObjects.Graphics[] = [];
     const tweens: Phaser.Tweens.Tween[] = [];
     for (let i = 0; i < N; i++) {
         const deco = scene.add.graphics();
         deco.setDepth(-999);
-        deco.setScrollFactor(0);
+        // World-space when the caller passes worldSize; screen-pinned
+        // otherwise. The difference is the whole point of this fix: a
+        // screen-pinned background provides no motion parallax when the
+        // camera follows the player around a scrolling world.
+        if (!worldSize) deco.setScrollFactor(0);
         decorations.push(deco);
         // Yoyo deco.y ±20 on top of the cx/cy baked into the drawing.
         tweens.push(scene.tweens.add({
@@ -54,10 +68,13 @@ export function paintGradientBackground(
             gradient.fillRect(0, sliceY, width, sliceH);
         }
 
+        // Scatter extent: world coords when scrolling, viewport otherwise.
+        const scatterW = worldSize ? worldSize.width : width;
+        const scatterH = worldSize ? worldSize.height : height;
         // Reposition by redrawing (cx/cy baked into the shape); leave tweens alone.
         decorations.forEach((deco, idx) => {
-            const cx = (width * ((idx * 37) % 100)) / 100;
-            const cy = (height * ((idx * 53) % 100)) / 100;
+            const cx = (scatterW * ((idx * 37) % 100)) / 100;
+            const cy = (scatterH * ((idx * 53) % 100)) / 100;
             const radius = 20 + ((idx * 7) % 30);
             const shade = idx % 3 === 0 ? 0xffffff : (idx % 3 === 1 ? topColor : bottomColor);
             deco.clear();

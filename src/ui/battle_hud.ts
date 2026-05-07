@@ -90,6 +90,19 @@ export function createBattleHud(
     };
     relayout();
 
+    // Pin every HUD GameObject to screen space. Battle scenes call
+    // cameras.main.startFollow(player) which scrolls the world; without
+    // scrollFactor=0 the HUD (positioned in world coords at the top) drifts
+    // off-screen as soon as the camera moves. Phaser's Container.setScrollFactor
+    // doesn't recurse into non-Container children by default, and rexUI's
+    // Sizer doesn't override it, so we set it on each GameObject explicitly.
+    const hudGOs: Phaser.GameObjects.GameObject[] = [hudBg, backBg, backText, backBtn];
+    if (hud.fps) hudGOs.push(hud.fps);
+    if (hud.status) hudGOs.push(hud.status);
+    if (hud.kills) hudGOs.push(hud.kills);
+    if (hud.invuln) hudGOs.push(hud.invuln);
+    for (const go of hudGOs) (go as any).setScrollFactor?.(0);
+
     hud.interactives = [backBtn, backBg, backText];
     hud.relayout = relayout;
     hud.height = () => sizer.height;
