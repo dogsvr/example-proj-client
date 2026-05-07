@@ -9,33 +9,27 @@ import { paintGradientBackground } from '../ui/background';
 import { paintArenaBoundary } from '../ui/arena_boundary';
 import { createBattleHud, type BattleHud } from '../ui/battle_hud';
 
-// ──────────────────────────────────────────────────────────────────────────
-// Lockstep battle scene. Gameplay matches state-sync exactly but physics
-// runs on the CLIENT, not the server. Every client executes the same frame
-// sequence with a fixed 50 ms timestep and a shared seed-driven PRNG, so
-// the resulting world state stays in sync across clients without the
-// server being the authority.
+// Lockstep battle scene. Gameplay matches state-sync, but physics runs on
+// the CLIENT. Every client executes the same frame sequence at a fixed
+// 50ms timestep and a shared seed-driven PRNG, so the world state stays
+// in sync without the server being the authority.
 //
-// The server (lockstep_sync_battle_room.ts) is thin: it generates a seed,
-// broadcasts action frames at 20 fps, injects join/leave actions, relays
-// player input, and receives `reportKills` right before the client leaves.
-// ──────────────────────────────────────────────────────────────────────────
+// The server (lockstep_sync_battle_room.ts) is thin: seed, 20fps broadcast
+// of action frames, join/leave injection, input relay, reportKills collection.
 const MAP_W = 800;
 const MAP_H = 1200;
 const PLAYER_SIZE = 20;
 const BALL_RADIUS = 5;
-// Lockstep runs Matter at a 50 ms fixed timestep (vs state-sync's ~16.67 ms).
-// Matter.Body.setVelocity internally scales by (deltaTime / _baseDelta=16.667)
-// so a given speed-per-tick translates to a larger per-frame displacement
-// here. Raised from state-sync's PLAYER_SPEED=3 / BALL_SPEED=5 so visible
-// travel-per-second lands in the same ballpark as state-sync.
+// Matter scales setVelocity by (dt / _baseDelta=16.667), so at a 50ms
+// step a given "speed" maps to a larger per-frame displacement than in
+// state-sync. Tuned so visible travel-per-second matches state-sync.
 const PLAYER_SPEED = 4;
 const BALL_SPEED = 6;
 const FIRE_INTERVAL = 1000;         // ms, simNow-based
 const BALL_TTL = 5000;
 const INVULN_DURATION = 2500;
 const FRAME_INTERVAL = 50;          // ms per lockstep frame (20 fps)
-const MAX_APPLIED_PER_TICK = 8;     // budget: ≤ 400 ms of catchup per render tick
+const MAX_APPLIED_PER_TICK = 8;     // ≤ 400ms of catchup per render tick
 
 const CAT_WALL = 0x0001;
 const CAT_PLAYER = 0x0002;
@@ -44,8 +38,7 @@ const CAT_BALL = 0x0004;
 const STATE_ALIVE = 0;
 const STATE_INVULN = 1;
 
-// Mirror of state-sync's palette so the two modes look visually uniform —
-// same colour for the same colorIdx across both scenes.
+// Mirror of state-sync's palette so both modes look uniform.
 const PLAYER_PALETTE: readonly number[] = [
     0x4A90E2, 0xE74C3C, 0x27AE60, 0xF5A623,
     0x9B59B6, 0x1ABC9C, 0xE91E63, 0x34495E,
@@ -72,9 +65,15 @@ type PlayerWorld = {
     kills: number;
     lastDirX: number;
     lastDirY: number;
-    // Current intended move direction (from the most recent input action).
-    // Re-applied every frame via setVelocity so friction doesn't decay
-    // a held key back to zero — input actions only arrive on change.
+    // Interp latch: prev = body pos at start of last step, curr = end.
+    // Render lerps prev→curr over FRAME_INTERVAL to hide the 20Hz cadence.
+    prevX: number;
+    prevY: number;
+    currX: number;
+    currY: number;
+    // Most recent intended move direction. Re-applied every frame because
+    // input actions only arrive on change; without the refresh frictionAir
+    // would decay a held key back to zero.
     curDirX: number;
     curDirY: number;
     hasMoved: boolean;
@@ -89,8 +88,8 @@ type BallWorld = {
     createTs: number;        // simNow
 };
 
-/** Deterministic 32-bit PRNG. All clients with the same seed produce the
- *  same sequence — required for respawn positions to match across clients. */
+/** Deterministic 32-bit PRNG. Same seed → same sequence, required for
+ *  respawn positions to match across clients. */
 function mulberry32(seed: number): () => number {
     let a = seed >>> 0;
     return () => {
@@ -117,15 +116,18 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
     private frameArray: Frame[] = [];
     private selfSessionId: string = '';
     private selfKills: number = 0;
-    private startedExec: boolean = false;       // gate: don't execFrame before init packet arrives
-    // Buffer broadcastFrame messages that arrive before init. Without this,
-    // live frames would interleave with historical frames incorrectly.
+    private startedExec: boolean = false;       // gate: don't execFrame before init
+    // Buffer broadcastFrames arriving before init, so live frames don't
+    // interleave with history incorrectly.
     private preInitFrameBuffer: Frame[] = [];
     private initReceived: boolean = false;
-    // Set while fast-forwarding through historical frames on join. The
-    // explosion helper checks this and skips particle bursts for historical
-    // deaths (they already happened; no need to animate them on entry).
+    // Set while fast-forwarding historical frames on join. spawnExplosion
+    // skips particle bursts during replay (those deaths already happened).
     private isReplaying: boolean = false;
+    // Wall-clock ms at which the last live execFrame latched its body
+    // snapshot; update() uses (now - lastStepWallMs) / FRAME_INTERVAL as t.
+    // Stays 0 during replay.
+    private lastStepWallMs: number = 0;
 
     private hud!: BattleHud;
 
@@ -141,17 +143,15 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
     private joystickPointerId: number | null = null;
     private lastSentInput: number = -1;         // bitfield; -1 forces first send
 
-    private selfInvulnEndsAt: number = 0;       // wall-clock ms (this.time.now) — HUD only
+    private selfInvulnEndsAt: number = 0;       // wall-clock ms — HUD only
 
-    // Same shutdown gate pattern as state_sync scene — prevents async
-    // Colyseus callbacks from creating ghost GameObjects after shutdown.
+    // Gate async Colyseus callbacks after scene.stop(). See state-sync scene.
     private isShuttingDown = false;
 
     constructor() { super({ key: 'lockstep_sync_battle' }); }
 
     async create() {
-        // Phaser reuses Scene instances by key — reset every field on each
-        // create() so a prior run doesn't leak state into the next run.
+        // Phaser reuses Scene instances by key — reset every field.
         this.isShuttingDown = false;
         this.players = new Map();
         this.balls = [];
@@ -166,6 +166,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         this.preInitFrameBuffer = [];
         this.initReceived = false;
         this.isReplaying = false;
+        this.lastStepWallMs = 0;
         this.joystickPointerId = null;
         this.lastSentInput = -1;
         this.selfInvulnEndsAt = 0;
@@ -174,7 +175,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             { width: MAP_W, height: MAP_H });
         this.hud = createBattleHud(this, () => {
             // Report final kill count BEFORE leaving so the server has it
-            // when it processes onLeave and emits ZONE_BATTLE_END_NTF.
+            // when onLeave emits ZONE_BATTLE_END_NTF.
             try { this.room?.send('reportKills', this.selfKills); } catch {}
             this.scene.switch('main');
             this.scene.stop('lockstep_sync_battle');
@@ -189,28 +190,24 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         this.cameras.main.setBounds(0, 0, MAP_W, MAP_H);
         paintArenaBoundary(this, MAP_W, MAP_H);
 
-        // onMessage(0) is the init packet (seed + self sid + currFrameId).
-        // Colyseus SDK does not deliver messages until joinOrCreate resolves,
-        // so registering here (right after resolve, before the next await)
-        // is safe.
+        // onMessage(0) is the init packet (seed + self sid + history).
+        // Colyseus doesn't deliver messages until joinOrCreate resolves, so
+        // registering here (before the next await) is safe.
         this.room.onMessage(0, (msg: any) => {
             if (this.isShuttingDown) return;
             this.selfSessionId = msg.selfSessionId;
             this.prng = mulberry32(msg.seed >>> 0);
 
-            // Seed local frame buffer with history (every frame already
-            // broadcast to other clients before we joined), then append
-            // anything that leaked in between connect and init arrival.
-            // Live frames will continue to push onto frameArray after this.
+            // Seed frame buffer with history, then append anything that
+            // leaked in between connect and init. Live frames push on after.
             const historical: Frame[] = Array.isArray(msg.historicalFrames) ? msg.historicalFrames : [];
             this.frameArray = historical.concat(this.preInitFrameBuffer);
             this.preInitFrameBuffer = [];
             this.nextFrameId = 0;
 
-            // Fast-forward: replay every historical frame synchronously so
-            // our world matches the current server state before handing
-            // control to the per-tick update loop. isReplaying suppresses
-            // visual side effects (particle bursts for historical deaths).
+            // Fast-forward historical frames synchronously to match the
+            // current server state before live ticks take over. isReplaying
+            // suppresses visual side effects (particle bursts).
             this.isReplaying = true;
             try {
                 while (this.nextFrameId < historical.length) {
@@ -226,10 +223,8 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         });
         this.room.onMessage('broadcastFrame', (frame: Frame) => {
             if (this.isShuttingDown) return;
-            // Messages can arrive in any order before init (Colyseus doesn't
-            // guarantee ordering between channels). Buffer them until the
-            // init message lands, then onMessage(0) will prepend history
-            // and concat the buffer in the right order.
+            // Buffer frames until init lands, so they concat in the right
+            // order (Colyseus doesn't guarantee cross-channel ordering).
             if (!this.initReceived) {
                 this.preInitFrameBuffer.push(frame);
             } else {
@@ -246,13 +241,12 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
             this.isShuttingDown = true;
 
-            // Each step independently guarded — learned from state-sync: a
-            // single throw (e.g. cameras.main.stopFollow after CameraManager
-            // already tore down) used to abort cleanup and leak GameObjects.
+            // Each step try/catch-guarded: a single throw (e.g. stopFollow
+            // after CameraManager tore down) used to abort cleanup and
+            // leak GameObjects.
             try { this.scale.off(Phaser.Scale.Events.RESIZE, onResize); } catch {}
-            // Intentionally NOT calling this.cameras.main.stopFollow(): the
-            // framework handles that and the call can null-deref late in
-            // the shutdown sequence.
+            // Don't call cameras.main.stopFollow(): framework handles it,
+            // and the call can null-deref late in shutdown.
             try { this.room?.leave(); } catch {}
             this.room = undefined;
 
@@ -274,6 +268,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             this.preInitFrameBuffer = [];
             this.initReceived = false;
             this.isReplaying = false;
+            this.lastStepWallMs = 0;
         });
     }
 
@@ -285,24 +280,21 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
                 ticket: startBattleRes.ticket,
             });
         } catch (e) {
-            // HUD has no status widget — leave the scene empty; user can Back.
+            // HUD has no status widget; scene stays empty, Back works.
         }
     }
 
     private initPhysics() {
-        // Lockstep requires manual physics driving. Phaser's MatterPlugin
-        // defaults to advancing Engine.update every scene tick with the
-        // wall-clock delta; that would double-drive (once by Phaser, once
-        // by us) AND make each client's timestep different, which diverges
-        // the sim. Turning autoUpdate off and calling world.step(50) by
-        // hand inside execFrame is what keeps all clients in lockstep.
+        // Lockstep drives physics manually. Phaser's MatterPlugin advances
+        // Engine.update every scene tick with the wall-clock delta; that
+        // would double-drive and give each client a different timestep,
+        // diverging the sim. Turn autoUpdate off and call world.step(50)
+        // by hand inside execFrame.
         this.matter.world.autoUpdate = false;
         this.matter.world.disableGravity();
 
-        // Four thick static walls — same layout as state-sync server.
-        // setBounds isn't enough: the resulting edges don't bounce with
-        // restitution=1 reliably, and we need the "bullets ricochet"
-        // behaviour identical to state-sync.
+        // Thick static walls outside the play area so fast bullets can't
+        // tunnel. setBounds' edges don't bounce reliably with restitution=1.
         const thick = 1000;
         const wallOpts: any = {
             isStatic: true, restitution: 1, friction: 0, frictionStatic: 0,
@@ -313,9 +305,9 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         this.matter.add.rectangle(MAP_W / 2, -thick / 2, MAP_W + thick * 2, thick, wallOpts);
         this.matter.add.rectangle(MAP_W / 2, MAP_H + thick / 2, MAP_W + thick * 2, thick, wallOpts);
 
-        // Matter collisionStart is dispatched DURING Engine.update — do NOT
-        // mutate the world here (no Composite.remove, no splice). Only push
-        // to pendingKills; drain in execFrame after world.step returns.
+        // collisionstart fires INSIDE Engine.update — only enqueue kills,
+        // drain after world.step returns (mutating the world mid-step
+        // corrupts the resolver's iterator).
         this.matter.world.on('collisionstart', (event: any) => this.onCollisionStart(event));
     }
 
@@ -323,21 +315,18 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         for (const pair of event.pairs) {
             const plugA = (pair.bodyA as any).plugin ?? {};
             const plugB = (pair.bodyB as any).plugin ?? {};
-            // One side must be a ball, the other a player — otherwise it's
-            // a wall-ball, wall-player, or ball-ball bounce (pure physics,
-            // no game effect).
+            // Only ball↔player pairs are game events; ball↔wall etc. are
+            // pure physics bounces.
             let ball: BallWorld | null = null;
             let player: PlayerWorld | null = null;
             if (plugA.ball && plugB.player) { ball = plugA.ball; player = plugB.player; }
             else if (plugB.ball && plugA.player) { ball = plugB.ball; player = plugA.player; }
             else continue;
 
-            // Self-bounce: own bullet never kills, Matter already reflected it.
+            // Self-bounce / invuln / orphan: physically bounces, no kill.
             const owner = this.players.get(ball!.ownerSessionId);
             if (owner === player) continue;
-            // Invuln victim: bullet physically bounces (no game effect).
             if (player!.state === STATE_INVULN) continue;
-            // Orphan bullet (owner already left): bounce, no kill.
             if (!owner) continue;
 
             this.pendingKills.push({ owner, victim: player!, ball: ball! });
@@ -349,9 +338,8 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
     update(): void {
         if (!this.room || this.isShuttingDown) return;
 
-        // 1) Input → bitfield. Only send when it changes to avoid per-tick
-        //    spam (the server adds each send to the current frame; many
-        //    identical sends per frame would bloat frameArray).
+        // 1) Input → bitfield. Only send on change — the server appends
+        //    each message to the current frame, repeats would bloat it.
         const leftKey = this.cursors.left.isDown || this.wasd.A.isDown;
         const rightKey = this.cursors.right.isDown || this.wasd.D.isDown;
         const upKey = this.cursors.up.isDown || this.wasd.W.isDown;
@@ -366,8 +354,8 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             try { this.room.send('submitAction', { vkey: 'input', args: [packed] }); } catch {}
         }
 
-        // 2) Drain up to N frames this render tick. Gate on startedExec so
-        //    we don't apply any frames before the init packet (seed) lands.
+        // 2) Drain up to N frames this tick. Gate on startedExec so we
+        //    don't apply anything before the init packet (seed) lands.
         if (this.startedExec) {
             let applied = 0;
             while (applied < MAX_APPLIED_PER_TICK && this.nextFrameId < this.frameArray.length) {
@@ -377,8 +365,22 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             }
         }
 
-        // 3) HUD invuln countdown — driven by wall-clock to stay smooth.
-        //    This is display-only, not part of the deterministic sim.
+        // 3) Render interp: players lerp prev→curr over FRAME_INTERVAL.
+        //    Without this the 20Hz cadence shows as 3-frame stair-step and
+        //    the camera lerp amplifies it into jitter. Bullets skip interp
+        //    — see execFrame step (f).
+        if (this.lastStepWallMs > 0) {
+            const t = Math.min(1, (this.time.now - this.lastStepWallMs) / FRAME_INTERVAL);
+            for (const p of this.players.values()) {
+                const x = p.prevX + (p.currX - p.prevX) * t;
+                const y = p.prevY + (p.currY - p.prevY) * t;
+                p.entity.x = x; p.entity.y = y;
+                p.ring.x = x;   p.ring.y = y;
+                p.label.x = x;  p.label.y = y - PLAYER_SIZE;
+            }
+        }
+
+        // 4) HUD invuln countdown — wall-clock, display-only.
         if (this.hud.invuln) {
             const remain = Math.max(0, this.selfInvulnEndsAt - this.time.now);
             this.hud.invuln.setText(remain > 0
@@ -393,11 +395,10 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             this.applyAction(action);
         }
 
-        // b) refresh per-player velocity every frame from their current
-        //    intended direction. Input actions only arrive on CHANGE, so
-        //    without this refresh Matter's frictionAir would decay a held
-        //    key back to zero within a few ticks. Bullets aren't refreshed
-        //    (their initial setVelocity + restitution=1 carries them).
+        // b) refresh velocity from current intent each frame. Input actions
+        //    only arrive on CHANGE, so without this frictionAir decays a
+        //    held key back to zero in a few ticks. Bullets aren't refreshed
+        //    (restitution=1 + initial setVelocity carries them).
         for (const p of this.players.values()) {
             if (!p.body) continue;
             this.matter.body.setVelocity(p.body, {
@@ -406,11 +407,11 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             });
         }
 
-        // c) fixed-timestep physics step — never use wall-clock delta here.
+        // c) fixed-timestep physics step.
         this.matter.world.step(FRAME_INTERVAL);
         this.simNow += FRAME_INTERVAL;
 
-        // d) drain pending kills queued by collisionStart during step.
+        // d) drain kills queued by collisionStart during step.
         if (this.pendingKills.length > 0) {
             const killedBalls = new Set<BallWorld>();
             const killedVictims = new Set<PlayerWorld>();
@@ -424,9 +425,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
                     this.selfKills = k.owner.kills;
                     this.hud.kills?.setText(`Kills ${this.selfKills}`);
                 }
-                // Particle burst at death position — this is visual only
-                // and may use non-deterministic randomness (does not touch
-                // world state or the PRNG).
+                // Visual-only — Math.random here doesn't feed the PRNG or sim state.
                 this.spawnExplosion(
                     k.victim.entity.x, k.victim.entity.y,
                     PLAYER_PALETTE[k.victim.colorIdx] ?? Palette.danger,
@@ -459,15 +458,27 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             }
         }
 
-        // f) sync visuals from physics bodies.
-        for (const p of this.players.values()) {
-            if (!p.body) continue;
-            p.entity.x = p.body.position.x;
-            p.entity.y = p.body.position.y;
-            p.ring.x = p.entity.x;
-            p.ring.y = p.entity.y;
-            p.label.x = p.entity.x;
-            p.label.y = p.entity.y - PLAYER_SIZE;
+        // f) sync visuals. Players latch prev/curr for update()'s per-frame
+        //    interp; bullets write authoritative pos (lerp across ricochets
+        //    draws a line across the bounce). Replay snaps prev=curr=body
+        //    so the first live step doesn't animate from a stale position.
+        if (this.isReplaying) {
+            for (const p of this.players.values()) {
+                if (!p.body) continue;
+                p.prevX = p.body.position.x; p.prevY = p.body.position.y;
+                p.currX = p.body.position.x; p.currY = p.body.position.y;
+                p.entity.x = p.currX; p.entity.y = p.currY;
+                p.ring.x = p.currX;   p.ring.y = p.currY;
+                p.label.x = p.currX;  p.label.y = p.currY - PLAYER_SIZE;
+            }
+        } else {
+            for (const p of this.players.values()) {
+                if (!p.body) continue;
+                p.prevX = p.currX; p.prevY = p.currY;
+                p.currX = p.body.position.x;
+                p.currY = p.body.position.y;
+            }
+            this.lastStepWallMs = this.time.now;
         }
         for (const b of this.balls) {
             if (!b.body) continue;
@@ -498,11 +509,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
                 const d = (packed & 8) !== 0;
                 const dx = r ? 1 : (l ? -1 : 0);
                 const dy = d ? 1 : (u ? -1 : 0);
-                // Record intent only; execFrame's per-frame velocity refresh
-                // (step b) applies it. Clients only broadcast input on
-                // change, so without the per-frame refresh, Matter's
-                // frictionAir would decay a held key back to zero after a
-                // few ticks.
+                // Record intent only — execFrame step (b) applies it next tick.
                 p.curDirX = dx;
                 p.curDirY = dy;
                 if (dx !== 0 || dy !== 0) {
@@ -522,7 +529,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
 
     private createPlayer(sid: string, gid: number, colorIdx: number, spawnX: number, spawnY: number): void {
         if (this.isShuttingDown) return;
-        if (this.players.has(sid)) return; // idempotent: late joiner might see a duplicate join frame
+        if (this.players.has(sid)) return; // idempotent: duplicate join frame
 
         const isSelf = sid === this.selfSessionId;
         const colorIdxSafe = ((colorIdx ?? 0) | 0) % PLAYER_PALETTE.length;
@@ -531,8 +538,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
 
         const body = this.matter.add.rectangle(spawnX, spawnY, PLAYER_SIZE, PLAYER_SIZE, {
             frictionAir: 0.08, friction: 0, frictionStatic: 0, restitution: 1,
-            // `inertia` isn't in Phaser's MatterBodyConfig types but matter-js
-            // honours it; cast avoids a type error without losing behaviour.
+            // `inertia` isn't in MatterBodyConfig types but matter-js honours it.
             inertia: Infinity,
             collisionFilter: { category: CAT_PLAYER, mask: CAT_WALL | CAT_BALL },
         } as any);
@@ -577,11 +583,12 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             hasMoved: false,
             invulnUntilTs: this.simNow + INVULN_DURATION,
             nextFireTs: 0,
+            prevX: spawnX, prevY: spawnY,
+            currX: spawnX, currY: spawnY,
         };
         (body as any).plugin = { player: pw };
         this.players.set(sid, pw);
 
-        // Self invuln HUD countdown starts now (wall-clock).
         if (isSelf) {
             this.selfInvulnEndsAt = this.time.now + INVULN_DURATION;
             this.hud.kills?.setText(`Kills 0`);
@@ -596,8 +603,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         this.players.delete(sid);
     }
 
-    /** Destroy only the visual + tween side of a player; used by both
-     *  action-driven leave and SHUTDOWN cleanup. */
+    /** Shared between action-driven leave and SHUTDOWN cleanup. */
     private destroyPlayerVisuals(p: PlayerWorld): void {
         try { p.ringTween.stop(); p.ringTween.remove(); } catch {}
         try { p.ring.destroy(); } catch {}
@@ -610,11 +616,10 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
 
         const body = this.matter.add.circle(p.body.position.x, p.body.position.y, BALL_RADIUS, {
             frictionAir: 0, friction: 0, frictionStatic: 0, restitution: 1,
-            // see createPlayer for note on the `inertia` type cast.
-            inertia: Infinity,
+            inertia: Infinity,                   // see createPlayer
             collisionFilter: { category: CAT_BALL, mask: CAT_WALL | CAT_PLAYER | CAT_BALL },
         } as any);
-        // Fire in the reverse of the owner's last non-zero movement dir.
+        // Fire opposite to owner's last non-zero movement dir.
         this.matter.body.setVelocity(body, {
             x: -p.lastDirX * BALL_SPEED,
             y: -p.lastDirY * BALL_SPEED,
@@ -643,17 +648,20 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
     }
 
     private respawnPlayer(p: PlayerWorld): void {
-        // Must use the seeded PRNG so all clients produce the same position.
-        // Every client drains pendingKills in the same order on the same
-        // frame, so the number of prng() draws is identical across clients.
+        // Seeded PRNG — every client drains pendingKills in the same order
+        // on the same frame, so prng() draw counts match across clients.
         const x = this.prng() * (MAP_W - PLAYER_SIZE) + PLAYER_SIZE / 2;
         const y = this.prng() * (MAP_H - PLAYER_SIZE) + PLAYER_SIZE / 2;
         this.matter.body.setPosition(p.body, { x, y });
         this.matter.body.setVelocity(p.body, { x: 0, y: 0 });
+        // Snap interp latch — respawn is a teleport; without this the next
+        // render frame would draw a line from death to respawn position.
+        p.prevX = x; p.prevY = y;
+        p.currX = x; p.currY = y;
         p.state = STATE_INVULN;
         p.invulnUntilTs = this.simNow + INVULN_DURATION;
         // Reset input latch: respawned player must move again before
-        // auto-fire resumes (matches state-sync behaviour).
+        // auto-fire resumes (matches state-sync).
         p.hasMoved = false;
         p.lastDirX = 0;
         p.lastDirY = 0;
@@ -665,11 +673,9 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         if (p.isSelf) this.selfInvulnEndsAt = this.time.now + INVULN_DURATION;
     }
 
-    /** Radial particle burst: 6 small circles tween outward + fade. Visual
-     *  only — non-deterministic Math.random is fine here since these
-     *  particles don't feed back into the sim state or PRNG. Skipped
-     *  during historical replay: those deaths are in the past and
-     *  animating hundreds of them on scene entry looks like garbage. */
+    /** 6-shard radial burst. Visual-only — Math.random doesn't feed the
+     *  sim or PRNG. Skipped during replay (historical deaths shouldn't
+     *  dump hundreds of particles on scene entry). */
     private spawnExplosion(x: number, y: number, color: number): void {
         if (this.isShuttingDown || this.isReplaying) return;
         const N = 6;
@@ -732,8 +738,8 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         this.joystick.setPosition(pointer.x, pointer.y);
         this.joystick.setVisible(true);
 
-        // rex TouchCursor needs pointer fed in manually — same workaround
-        // as state-sync scene; see state_sync_battle_scene.ts for rationale.
+        // rex TouchCursor needs the pointer fed in manually — same trick
+        // as state-sync scene.
         const tc = (this.joystick as unknown as {
             touchCursor: { onKeyDownStart(p: Phaser.Input.Pointer): void };
         }).touchCursor;

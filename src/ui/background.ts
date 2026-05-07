@@ -1,14 +1,13 @@
 import Phaser from 'phaser';
 
 /**
- * Scene background: interpolated-slab vertical gradient + drifting shapes.
- * Tweens persist across resizes; redraw only repositions the graphics.
+ * Vertical gradient + drifting decorations. Tweens persist across resizes;
+ * redraw only repositions the graphics.
  *
- * Pass `worldSize` when the scene has a scrolling camera (battle scenes):
- * the gradient stays screen-pinned (covers the viewport no matter where
- * the camera is) but the decorations move into world space and scatter
- * across the full map so the player gets a visible motion cue as the
- * camera follows them. Without worldSize, everything is screen-pinned
+ * `worldSize` is set by scenes with a scrolling camera (battle scenes):
+ * the gradient stays screen-pinned, decorations move into world space
+ * and scatter across the full map so the player gets a motion cue as
+ * the camera follows. Without worldSize, everything is screen-pinned
  * (correct for static scenes like the main menu).
  */
 export function paintGradientBackground(
@@ -21,18 +20,16 @@ export function paintGradientBackground(
     gradient.setDepth(-1000);
     gradient.setScrollFactor(0);
 
-    // Scale decoration count with world area so on-screen density stays
-    // similar — a 800×1200 world covers ~3× a typical portrait viewport.
+    // More decorations when scattered across a world than a viewport —
+    // 800×1200 is ~3× a portrait phone, keep density similar.
     const N = worldSize ? 36 : 18;
     const decorations: Phaser.GameObjects.Graphics[] = [];
     const tweens: Phaser.Tweens.Tween[] = [];
     for (let i = 0; i < N; i++) {
         const deco = scene.add.graphics();
         deco.setDepth(-999);
-        // World-space when the caller passes worldSize; screen-pinned
-        // otherwise. The difference is the whole point of this fix: a
-        // screen-pinned background provides no motion parallax when the
-        // camera follows the player around a scrolling world.
+        // World-space (default scrollFactor=1) when the scene scrolls, so
+        // decorations give motion parallax as the camera follows the player.
         if (!worldSize) deco.setScrollFactor(0);
         decorations.push(deco);
         // Yoyo deco.y ±20 on top of the cx/cy baked into the drawing.
@@ -71,7 +68,7 @@ export function paintGradientBackground(
         // Scatter extent: world coords when scrolling, viewport otherwise.
         const scatterW = worldSize ? worldSize.width : width;
         const scatterH = worldSize ? worldSize.height : height;
-        // Reposition by redrawing (cx/cy baked into the shape); leave tweens alone.
+        // Reposition by redrawing (cx/cy is baked into each path).
         decorations.forEach((deco, idx) => {
             const cx = (scatterW * ((idx * 37) % 100)) / 100;
             const cy = (scatterH * ((idx * 53) % 100)) / 100;

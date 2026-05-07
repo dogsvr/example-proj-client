@@ -9,7 +9,6 @@ import { paintArenaBoundary } from '../ui/arena_boundary';
 import { createBattleHud, type BattleHud } from '../ui/battle_hud';
 
 // Mirror of server-side constants (see state_sync_battle_room.ts).
-// Only the values the client has to reason about locally live here.
 const MAP_W = 800;
 const MAP_H = 1200;
 const INVULN_DURATION = 2500;     // must match server
@@ -17,10 +16,15 @@ const PLAYER_SIZE = 20;
 const BALL_RADIUS = 5;
 const STATE_INVULN = 1;
 
-// 8 distinct high-contrast colours for up to MAX_PLAYERS=8 on server. The
-// server assigns each player a stable `colorIdx`; every client uses the
-// same array so everybody sees the same colour for the same player. Self
-// gets a white outline and "YOU" label on top of its palette colour.
+// Linear interpolation window between patches. Without this, entity.x
+// steps once per patch (~20Hz) while the camera lerps every frame, and
+// the subframe delta oscillates visibly around self. 100ms ≈ 2× default
+// patchRate to tolerate WebSocket jitter.
+const INTERP_DURATION = 100;
+
+// 8 high-contrast colours for up to MAX_PLAYERS=8. Stable per-session
+// colorIdx from the server gives every client the same colour for the
+// same player; self gets a white outline + "YOU" label on top.
 const PLAYER_PALETTE: readonly number[] = [
     0x4A90E2, // 1 blue
     0xE74C3C, // 2 red
@@ -32,9 +36,7 @@ const PLAYER_PALETTE: readonly number[] = [
     0x34495E, // 8 slate
 ] as const;
 
-// CSS hex mirrors of PLAYER_PALETTE for the head labels. Keeping the
-// name-tag colour in sync with the body means a glance at any player
-// groups their bullets + label + body as the same entity.
+// CSS hex mirror of PLAYER_PALETTE for head labels.
 const PLAYER_PALETTE_HEX: readonly string[] = [
     '#4A90E2', '#E74C3C', '#27AE60', '#F5A623',
     '#9B59B6', '#1ABC9C', '#E91E63', '#34495E',
@@ -47,28 +49,31 @@ type PlayerEntity = {
     label: Phaser.GameObjects.Text;
     colorIdx: number;
     isSelf: boolean;
+    // Render lerps prev→target over INTERP_DURATION from interpStart.
+    prevX: number;
+    prevY: number;
+    targetX: number;
+    targetY: number;
+    interpStart: number;
     onChangeUnsub?: () => void;
     onStateListenUnsub?: () => void;
 };
 
 /**
- * State-sync battle: server-authoritative Matter physics, client renders state
- * and forwards input. Map is larger than the viewport; camera follows self.
- *
- * Each player is assigned a stable `colorIdx` by the server so every client
- * sees a consistent colour for the same player. Self additionally gets a
- * white outline + "YOU" label; others get "P<n>" labels. Bullets are
- * coloured by their owner's palette slot, so you can tell at a glance
- * whose projectile is coming at you.
+ * State-sync battle: server-authoritative Matter physics, client renders
+ * state and forwards input. Map is larger than the viewport; camera
+ * follows self.
  */
 export class StateSyncBattleScene extends Phaser.Scene {
     rexUI!: UIPlugin;
     rexVirtualJoyStick!: VirtualJoyStickPlugin;
     room: Room;
     playerEntities: { [sessionId: string]: PlayerEntity } = {};
-    // Key by the Ball schema instance, not by numeric index: ArraySchema's
-    // onAdd gives insertion ordinal, onRemove gives shifting array index —
-    // the two can't be correlated by number.
+    // Keyed by the Ball schema instance — ArraySchema.onAdd gives insertion
+    // ordinal while onRemove gives shifting array index, so neither is
+    // usable as a correlation key.
+    // Bullets render at the authoritative position (no interp); lerping
+    // across a ricochet draws a straight line across the bounce.
     ballEntities: Map<object, Phaser.GameObjects.Arc> = new Map();
     private hud!: BattleHud;
     inputPayload = { left: false, right: false, up: false, down: false };
@@ -83,19 +88,16 @@ export class StateSyncBattleScene extends Phaser.Scene {
     };
     private joystickPointerId: number | null = null;
 
-    private selfInvulnEndsAt: number = 0;   // scene-clock ms (this.time.now)
+    private selfInvulnEndsAt: number = 0;   // scene-clock ms
 
-    // Shutdown gate: Colyseus state callbacks can fire asynchronously after
-    // scene.stop() is called (room.leave takes a tick to propagate). Without
-    // this flag, onPlayerAdd can create a new rect right after shutdown and
-    // leave a stray GameObject behind the next time the scene starts.
+    // Gate async Colyseus callbacks after scene.stop(); without it
+    // onPlayerAdd can leak a rect that survives into the next scene enter.
     private isShuttingDown = false;
 
     constructor() { super({ key: 'state_sync_battle' }); }
 
     async create() {
-        // create() runs on each scene.start() / .switch(); reset per-instance
-        // state explicitly because Phaser reuses Scene instances by key.
+        // Phaser reuses Scene instances by key — reset per-instance state.
         this.isShuttingDown = false;
         this.playerEntities = {};
         this.ballEntities = new Map();
@@ -114,8 +116,9 @@ export class StateSyncBattleScene extends Phaser.Scene {
         await this.connect();
         if (!this.room || this.isShuttingDown) return;
 
-        // Collection callbacks go through `getStateCallbacks(room)`; wait for
-        // the first onStateChange since joinOrCreate resolves before state arrives.
+        // Collection callbacks go through `getStateCallbacks(room)`;
+        // joinOrCreate resolves before state arrives so wait for first
+        // onStateChange.
         this.room.onStateChange.once((state) => {
             if (this.isShuttingDown) return;
             this.cameras.main.setBounds(0, 0, state.mapWidth, state.mapHeight);
@@ -137,24 +140,18 @@ export class StateSyncBattleScene extends Phaser.Scene {
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
             this.isShuttingDown = true;
 
-            // Defensive cleanup: each step is wrapped in try/catch because
-            // Phaser 4's scene sub-systems tear down in an order we don't
-            // control — an early failure (e.g. `cameras.main.stopFollow()`
-            // after CameraManager already nulled the Camera) used to abort
-            // the rest of the handler and leave ghost entities behind on
-            // the next scene enter.
+            // Each step try/catch-guarded: Phaser 4 tears down sub-systems
+            // in an order we don't control, and a single throw used to
+            // abort cleanup and leak GameObjects across scene restarts.
             try { this.scale.off(Phaser.Scale.Events.RESIZE, onResize); } catch {}
-            // Intentionally NOT calling `this.cameras.main.stopFollow()`:
-            // the CameraManager may have already disposed the Camera by
-            // the time our SHUTDOWN handler runs, and the framework
-            // cleans up camera follow state on its own.
+            // Don't call cameras.main.stopFollow() — CameraManager may have
+            // already disposed the Camera; framework handles it.
             try { this.room?.leave(); } catch {}
             this.room = undefined;
 
-            // Phaser's DisplayList.shutdown destroys everything on the scene
-            // list automatically. The explicit destroys below cover tween-
-            // held target refs that wouldn't otherwise be released cleanly
-            // across scene restarts. destroy() is idempotent on Phaser GOs.
+            // DisplayList.shutdown destroys scene GameObjects automatically;
+            // these explicit destroys release tween-held target refs that
+            // otherwise leak across restarts. destroy() is idempotent.
             try {
                 for (const sid of Object.keys(this.playerEntities)) {
                     this.destroyPlayerEntity(this.playerEntities[sid]);
@@ -166,9 +163,8 @@ export class StateSyncBattleScene extends Phaser.Scene {
             this.playerEntities = {};
             this.ballEntities = new Map();
 
-            // Virtual joystick holds refs to base+thumb via the rex plugin —
-            // destroy() detaches the plugin's pointer listeners; the orphan
-            // visuals are then collected by DisplayList.shutdown.
+            // rex joystick holds refs to base+thumb; destroy() detaches
+            // its pointer listeners, then DisplayList handles the visuals.
             try { this.joystick?.destroy(); } catch {}
 
             this.joystickPointerId = null;
@@ -180,13 +176,12 @@ export class StateSyncBattleScene extends Phaser.Scene {
         const startBattleRes = this.registry.get('startBattleRes');
         const client = new Client(`ws://${window.location.hostname}:${startBattleRes.battleSvrAddr}`);
         try {
-            // Identity lives in the ticket (consumed in onAuth); never pass openId/zoneId.
+            // Identity lives in the ticket (consumed in onAuth).
             this.room = await client.joinOrCreate(startBattleRes.roomType, {
                 ticket: startBattleRes.ticket,
             });
         } catch (e) {
-            // HUD no longer has a status widget for state-sync; leave the
-            // scene empty — the next Back will take user back to main.
+            // No status widget on state-sync HUD; scene stays empty, Back works.
         }
     }
 
@@ -203,13 +198,12 @@ export class StateSyncBattleScene extends Phaser.Scene {
         const entity = this.add.rectangle(player.x, player.y,
             PLAYER_SIZE, PLAYER_SIZE, bodyColor);
         if (isSelf) {
-            entity.setStrokeStyle(3, 0xFFFFFF, 1);   // extra "this is you" tell
+            entity.setStrokeStyle(3, 0xFFFFFF, 1);
             this.cameras.main.startFollow(entity, true, 0.1, 0.1);
         }
 
-        // Head-label: always visible, colour-matched to body so you group
-        // label + body + bullets by colour at a glance. "YOU" for self,
-        // "P<n>" for others (1-indexed based on colorIdx).
+        // Head label: "YOU" for self, "P<n>" for others. Colour-matched
+        // to body so bullets + label + body group at a glance.
         const label = this.add.text(player.x, player.y - PLAYER_SIZE, '', {
             ...textStyle({
                 size: FontSize.caption,
@@ -221,8 +215,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
         }).setOrigin(0.5, 1);
         label.setText(isSelf ? 'YOU' : `P${colorIdx + 1}`);
 
-        // Invuln ring: green stroked circle that pulses; attached to the
-        // same position as entity, toggled by player.state.
+        // Invuln ring: pulsing green circle, visibility driven by player.state.
         const ring = this.add.circle(player.x, player.y, PLAYER_SIZE * 0.9)
             .setStrokeStyle(3, Palette.success, 0.9)
             .setFillStyle(Palette.success, 0.0)
@@ -237,15 +230,19 @@ export class StateSyncBattleScene extends Phaser.Scene {
             paused: true,
         });
 
-        this.playerEntities[sessionId] = { entity, ring, ringTween, label, colorIdx, isSelf };
+        this.playerEntities[sessionId] = {
+            entity, ring, ringTween, label, colorIdx, isSelf,
+            prevX: player.x, prevY: player.y,
+            targetX: player.x, targetY: player.y,
+            interpStart: this.time.now,
+        };
 
-        // IMPORTANT: listen('state', ...) MUST fire before onChange() updates
-        // entity.x/y, so the explosion plays at the death position. Colyseus
-        // 0.17 applies fields in declaration order and fires listens inline;
-        // the server-side Player schema declares `state` before `x/y`.
+        // listen('state', ...) MUST fire before onChange updates the interp
+        // target so the explosion plays at the old (death) position. Colyseus
+        // 0.17 applies fields in declaration order; server schema declares
+        // `state` before `x/y`.
         $(player).listen('state', (newVal: number, oldVal: number | undefined) => {
-            // oldVal is undefined on first-ever delivery (onAdd initial state) —
-            // treat that as no transition; a new player is already invuln.
+            // oldVal undefined on first-ever delivery — not a transition.
             if (oldVal !== undefined && oldVal !== newVal) {
                 this.spawnExplosion(entity.x, entity.y, bodyColor);
             }
@@ -262,15 +259,27 @@ export class StateSyncBattleScene extends Phaser.Scene {
             }
         });
 
+        // onChange fires once per patch (~20Hz). We update the interp
+        // target and let update() smooth it. A large jump (respawn) snaps
+        // prev to target so we don't draw a line across the map.
         $(player).onChange(() => {
-            entity.x = player.x; entity.y = player.y;
-            ring.x = player.x;   ring.y = player.y;
-            label.x = player.x;  label.y = player.y - PLAYER_SIZE;
+            const pe = this.playerEntities[sessionId];
+            if (!pe) return;
+            const dx = player.x - pe.targetX;
+            const dy = player.y - pe.targetY;
+            const jumped = dx * dx + dy * dy > (PLAYER_SIZE * 4) ** 2;
+            if (jumped) {
+                pe.prevX = player.x; pe.prevY = player.y;
+            } else {
+                pe.prevX = pe.entity.x; pe.prevY = pe.entity.y;
+            }
+            pe.targetX = player.x;
+            pe.targetY = player.y;
+            pe.interpStart = this.time.now;
             if (isSelf) this.hud.kills?.setText(`Kills ${player.kills}`);
         });
 
-        // First-paint: listen/onChange only fire on future changes, so the
-        // initial ring visibility and kills text need a one-off prime here.
+        // First-paint prime: listen/onChange only fire on future changes.
         if (player.state === STATE_INVULN) {
             ring.setVisible(true);
             ringTween.resume();
@@ -287,9 +296,8 @@ export class StateSyncBattleScene extends Phaser.Scene {
     }
 
     private destroyPlayerEntity(pe: PlayerEntity): void {
-        // Stop tween first — Phaser tweens hold a hard ref to their target,
-        // destroying the target while the tween is active leaves a zombie
-        // tween that re-creates a listener on next update tick.
+        // Stop tween first — it holds a hard ref to the target; destroying
+        // the target while the tween is active leaves a zombie listener.
         pe.ringTween.stop();
         pe.ringTween.remove();
         pe.ring.destroy();
@@ -300,17 +308,15 @@ export class StateSyncBattleScene extends Phaser.Scene {
     private onBallAdd(ball: any, state: any, $: any): void {
         if (this.isShuttingDown) return;
 
-        // Colour the ball by its owner's palette slot. If the owner already
-        // left (orphan bullet), fall back to a neutral grey — the server
-        // keeps these bullets inert anyway (no kill), grey signals "stray".
+        // Colour the ball by owner's palette slot; grey if owner already left
+        // (orphan bullet — server keeps it inert, grey signals "stray").
         const owner = state.players.get(ball.ownerSessionId);
         const color = owner
             ? PLAYER_PALETTE[(owner.colorIdx ?? 0) % PLAYER_PALETTE.length]
             : Palette.textSecondary;
 
         const entity = this.add.arc(ball.x, ball.y, BALL_RADIUS, 0, 360, false, color);
-        // Tiny white outline on my own bullets — subtle cue that you can't
-        // be hit by these. Matches the white outline on self's rect.
+        // White outline on own bullets — subtle cue these can't hit you.
         if (ball.ownerSessionId === this.room.sessionId) {
             entity.setStrokeStyle(1.5, 0xFFFFFF, 1);
         }
@@ -353,9 +359,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
         this.joystickBase = this.add.circle(0, 0, BASE_RADIUS, Palette.textPrimary, 0.10);
         this.joystickBase.setStrokeStyle(2, Palette.textPrimary, 0.22);
         this.joystickBase.setDepth(1000);
-        // Joystick is in screen space (UI), not world space — pin its depth
-        // above entities and its scroll factor to 0 so it stays on-screen
-        // when the camera follows self around the larger world.
+        // Screen-space UI: stays on-screen as the camera follows self.
         this.joystickBase.setScrollFactor(0);
         this.joystickThumb = this.add.circle(0, 0, THUMB_RADIUS, Palette.textSecondary, 0.55);
         this.joystickThumb.setDepth(1001);
@@ -394,11 +398,10 @@ export class StateSyncBattleScene extends Phaser.Scene {
         this.joystick.setPosition(pointer.x, pointer.y);
         this.joystick.setVisible(true);
 
-        // ⚠️ rex-plugins TouchCursor subscribes to `base.on('pointerdown')`,
-        // but our base is at (0,0) + invisible when Phaser fires pointerdown,
-        // so the plugin never starts tracking. Feed the pointer in manually
-        // via its onKeyDownStart method. Not in VirtualJoyStick.d.ts — the
-        // cast is the one place we reach past the public API.
+        // rex TouchCursor subscribes to base.on('pointerdown'), but our base
+        // is at (0,0) + invisible when Phaser fires pointerdown so the plugin
+        // never starts tracking. Feed the pointer in via its (undocumented)
+        // onKeyDownStart.
         const tc = (this.joystick as unknown as {
             touchCursor: { onKeyDownStart(p: Phaser.Input.Pointer): void };
         }).touchCursor;
@@ -411,8 +414,8 @@ export class StateSyncBattleScene extends Phaser.Scene {
     }
 
     private hideJoystick(): void {
-        // setVisible(false) also disables → clears TouchCursor's captured
-        // pointer and zeros joystick.{left,right,up,down}.
+        // Disabling also clears TouchCursor's captured pointer and zeros
+        // joystick.{left,right,up,down}.
         this.joystick.setVisible(false);
         this.joystickPointerId = null;
     }
@@ -431,9 +434,22 @@ export class StateSyncBattleScene extends Phaser.Scene {
 
         this.room.send(0, this.inputPayload);
 
-        // Invuln countdown: driven from the client clock snapshot taken at
-        // the last STATE_ALIVE→STATE_INVULN transition, so we don't need
-        // the server to stream a remaining-time field every tick.
+        // Per-frame interp: players lerp prev→target over INTERP_DURATION.
+        // Decouples render from patch rate so the camera lerp has a smooth
+        // target. Bullets skip interp to keep ricochets honest.
+        const now = this.time.now;
+        for (const sid of Object.keys(this.playerEntities)) {
+            const pe = this.playerEntities[sid];
+            const t = Math.min(1, (now - pe.interpStart) / INTERP_DURATION);
+            const x = pe.prevX + (pe.targetX - pe.prevX) * t;
+            const y = pe.prevY + (pe.targetY - pe.prevY) * t;
+            pe.entity.x = x; pe.entity.y = y;
+            pe.ring.x = x;   pe.ring.y = y;
+            pe.label.x = x;  pe.label.y = y - PLAYER_SIZE;
+        }
+
+        // Invuln countdown from the client-side snapshot taken at the last
+        // STATE_ALIVE→STATE_INVULN transition (no server streaming needed).
         if (this.hud.invuln) {
             const remain = Math.max(0, this.selfInvulnEndsAt - this.time.now);
             this.hud.invuln.setText(remain > 0
