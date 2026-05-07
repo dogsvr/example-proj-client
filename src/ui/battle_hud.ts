@@ -4,24 +4,43 @@ import RoundRectangle from 'phaser4-rex-plugins/plugins/roundrectangle.js';
 import { Palette, Radius, Spacing, FontSize, HexText, textStyle } from '../theme';
 
 /**
- * Shared top HUD for both battle scenes: FPS text, status text, Back button,
- * opaque white card background. Keeps WCAG AAA contrast via solid colors only.
+ * Shared top HUD for battle scenes. Which widgets appear is controlled by
+ * the caller — lockstep keeps fps + status, state-sync uses kills + invuln.
+ * The HUD is a single rexUI horizontal Sizer centered over a white card.
  */
 export interface BattleHud {
-    fps: Phaser.GameObjects.Text;
-    status: Phaser.GameObjects.Text;
+    fps?: Phaser.GameObjects.Text;
+    status?: Phaser.GameObjects.Text;
+    kills?: Phaser.GameObjects.Text;
+    invuln?: Phaser.GameObjects.Text;
     interactives: Phaser.GameObjects.GameObject[];
     relayout(): void;
     height(): number;
 }
 
+export type HudWidgets = {
+    fps?: boolean;
+    status?: boolean;
+    kills?: boolean;
+    invuln?: boolean;
+};
+
 interface RexScene extends Phaser.Scene { rexUI: UIPlugin; }
 
-export function createBattleHud(scene: RexScene, onBack: () => void): BattleHud {
-    const fps = scene.add.text(0, 0, 'FPS --',
-        textStyle({ size: FontSize.caption, color: HexText.primary, weight: 'bold' }));
-    const status = scene.add.text(0, 0, 'Connecting…',
-        textStyle({ size: FontSize.caption, color: HexText.primary }));
+export function createBattleHud(
+    scene: RexScene,
+    onBack: () => void,
+    widgets: HudWidgets = { fps: true, status: true },
+): BattleHud {
+    const hud: BattleHud = { interactives: [], relayout: () => {}, height: () => 0 };
+
+    const captionStyle = () => textStyle({ size: FontSize.caption, color: HexText.primary, weight: 'bold' });
+    const captionStyleRegular = () => textStyle({ size: FontSize.caption, color: HexText.primary });
+
+    if (widgets.fps) hud.fps = scene.add.text(0, 0, 'FPS --', captionStyle());
+    if (widgets.status) hud.status = scene.add.text(0, 0, 'Connecting…', captionStyleRegular());
+    if (widgets.kills) hud.kills = scene.add.text(0, 0, 'Kills 0', captionStyle());
+    if (widgets.invuln) hud.invuln = scene.add.text(0, 0, 'Invuln --', captionStyleRegular());
 
     const backBg = new RoundRectangle(scene, 0, 0, 2, 2, Radius.btn, Palette.textPrimary);
     scene.add.existing(backBg);
@@ -41,30 +60,38 @@ export function createBattleHud(scene: RexScene, onBack: () => void): BattleHud 
     hudBg.setDepth(-1);
     scene.add.existing(hudBg);
 
-    const hud = scene.rexUI.add.sizer({
+    const sizer = scene.rexUI.add.sizer({
         orientation: 'horizontal',
         space: { left: Spacing.md, right: Spacing.md, top: Spacing.sm, bottom: Spacing.sm, item: Spacing.md },
-    })
-        .addBackground(hudBg)
-        .add(fps, { align: 'center' })
-        .addSpace()
-        .add(status, { align: 'center' })
-        .addSpace()
-        .add(backBtn, { align: 'center' });
+    }).addBackground(hudBg);
+
+    // Order: fps → status → kills → invuln → Back. addSpace() between items
+    // pushes Back to the right; each text gets addSpace after itself so the
+    // widgets fan out evenly rather than crowd on the left.
+    const leftWidgets: Phaser.GameObjects.Text[] = [];
+    if (hud.fps) leftWidgets.push(hud.fps);
+    if (hud.status) leftWidgets.push(hud.status);
+    if (hud.kills) leftWidgets.push(hud.kills);
+    if (hud.invuln) leftWidgets.push(hud.invuln);
+
+    for (let i = 0; i < leftWidgets.length; i++) {
+        sizer.add(leftWidgets[i], { align: 'center' });
+        sizer.addSpace();
+    }
+    if (leftWidgets.length === 0) sizer.addSpace(); // keep Back right-aligned even with no text
+    sizer.add(backBtn, { align: 'center' });
 
     const relayout = () => {
         const { width } = scene.scale;
         const hudWidth = Math.min(width - Spacing.lg * 2, 500);
-        hud.setMinSize(hudWidth, 0);
-        hud.layout();
-        hud.setPosition(width / 2, Spacing.lg + hud.height / 2);
+        sizer.setMinSize(hudWidth, 0);
+        sizer.layout();
+        sizer.setPosition(width / 2, Spacing.lg + sizer.height / 2);
     };
     relayout();
 
-    return {
-        fps, status,
-        interactives: [backBtn, backBg, backText],
-        relayout,
-        height: () => hud.height,
-    };
+    hud.interactives = [backBtn, backBg, backText];
+    hud.relayout = relayout;
+    hud.height = () => sizer.height;
+    return hud;
 }
