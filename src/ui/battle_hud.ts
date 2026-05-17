@@ -12,6 +12,7 @@ export interface BattleHud {
     fps?: Phaser.GameObjects.Text;
     status?: Phaser.GameObjects.Text;
     kills?: Phaser.GameObjects.Text;
+    deaths?: Phaser.GameObjects.Text;
     invuln?: Phaser.GameObjects.Text;
     interactives: Phaser.GameObjects.GameObject[];
     relayout(): void;
@@ -22,6 +23,7 @@ export type HudWidgets = {
     fps?: boolean;
     status?: boolean;
     kills?: boolean;
+    deaths?: boolean;
     invuln?: boolean;
 };
 
@@ -39,7 +41,8 @@ export function createBattleHud(
 
     if (widgets.fps) hud.fps = scene.add.text(0, 0, 'FPS --', captionStyle());
     if (widgets.status) hud.status = scene.add.text(0, 0, 'Connecting…', captionStyleRegular());
-    if (widgets.kills) hud.kills = scene.add.text(0, 0, 'Kills 0', captionStyle());
+    if (widgets.kills) hud.kills = scene.add.text(0, 0, 'Score 0', captionStyle());
+    if (widgets.deaths) hud.deaths = scene.add.text(0, 0, 'Outs 0', captionStyle());
     if (widgets.invuln) hud.invuln = scene.add.text(0, 0, 'Invuln --', captionStyleRegular());
 
     const backBg = new RoundRectangle(scene, 0, 0, 2, 2, Radius.btn, Palette.textPrimary);
@@ -65,13 +68,14 @@ export function createBattleHud(
         space: { left: Spacing.md, right: Spacing.md, top: Spacing.sm, bottom: Spacing.sm, item: Spacing.md },
     }).addBackground(hudBg);
 
-    // Order: fps → status → kills → invuln → Back. addSpace() between items
-    // pushes Back to the right; each text gets addSpace after itself so the
-    // widgets fan out evenly rather than crowd on the left.
+    // Order: fps → status → kills → deaths → invuln → Back. addSpace() between
+    // items pushes Back to the right; each text gets addSpace after itself so
+    // the widgets fan out evenly rather than crowd on the left.
     const leftWidgets: Phaser.GameObjects.Text[] = [];
     if (hud.fps) leftWidgets.push(hud.fps);
     if (hud.status) leftWidgets.push(hud.status);
     if (hud.kills) leftWidgets.push(hud.kills);
+    if (hud.deaths) leftWidgets.push(hud.deaths);
     if (hud.invuln) leftWidgets.push(hud.invuln);
 
     for (let i = 0; i < leftWidgets.length; i++) {
@@ -100,6 +104,7 @@ export function createBattleHud(
     if (hud.fps) hudGOs.push(hud.fps);
     if (hud.status) hudGOs.push(hud.status);
     if (hud.kills) hudGOs.push(hud.kills);
+    if (hud.deaths) hudGOs.push(hud.deaths);
     if (hud.invuln) hudGOs.push(hud.invuln);
     for (const go of hudGOs) (go as any).setScrollFactor?.(0);
 

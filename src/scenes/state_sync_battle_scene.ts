@@ -7,20 +7,21 @@ import { FontSize, HexText, Palette, Spacing, SceneBG, textStyle } from '../them
 import { paintGradientBackground } from '../ui/background';
 import { paintArenaBoundary } from '../ui/arena_boundary';
 import { createBattleHud, type BattleHud } from '../ui/battle_hud';
+import { SnapshotBuffer } from '../util/snapshot_buffer';
+import { DebugOverlay } from '../util/debug_overlay';
 
 // Mirror of server-side constants (see state_sync_battle_room.ts).
 const MAP_W = 800;
 const MAP_H = 1200;
-const INVULN_DURATION = 2500;     // must match server
 const PLAYER_SIZE = 20;
 const BALL_RADIUS = 5;
 const STATE_INVULN = 1;
 
-// Linear interpolation window between patches. Without this, entity.x
-// steps once per patch (~20Hz) while the camera lerps every frame, and
-// the subframe delta oscillates visibly around self. 100ms ≈ 2× default
-// patchRate to tolerate WebSocket jitter.
-const INTERP_DURATION = 100;
+// Delayed-render interpolation. 100ms ≈ 2× default patchRate (50ms) —
+// absorbs WebSocket jitter and a single dropped patch.
+const INTERP_DELAY = 100;
+// Per-patch displacement above this is a teleport (respawn) — buffer resets.
+const JUMP_DIST_SQ = (PLAYER_SIZE * 4) ** 2;
 
 // 8 high-contrast colours for up to MAX_PLAYERS=8. Stable per-session
 // colorIdx from the server gives every client the same colour for the
@@ -49,14 +50,12 @@ type PlayerEntity = {
     label: Phaser.GameObjects.Text;
     colorIdx: number;
     isSelf: boolean;
-    // Render lerps prev→target over INTERP_DURATION from interpStart.
-    prevX: number;
-    prevY: number;
-    targetX: number;
-    targetY: number;
-    interpStart: number;
-    onChangeUnsub?: () => void;
-    onStateListenUnsub?: () => void;
+    buffer: SnapshotBuffer;
+};
+
+type BallEntity = {
+    entity: Phaser.GameObjects.Arc;
+    buffer: SnapshotBuffer;
 };
 
 /**
@@ -72,9 +71,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
     // Keyed by the Ball schema instance — ArraySchema.onAdd gives insertion
     // ordinal while onRemove gives shifting array index, so neither is
     // usable as a correlation key.
-    // Bullets render at the authoritative position (no interp); lerping
-    // across a ricochet draws a straight line across the bounce.
-    ballEntities: Map<object, Phaser.GameObjects.Arc> = new Map();
+    ballEntities: Map<object, BallEntity> = new Map();
     private hud!: BattleHud;
     inputPayload = { left: false, right: false, up: false, down: false };
 
@@ -88,11 +85,16 @@ export class StateSyncBattleScene extends Phaser.Scene {
     };
     private joystickPointerId: number | null = null;
 
-    private selfInvulnEndsAt: number = 0;   // scene-clock ms
-
     // Gate async Colyseus callbacks after scene.stop(); without it
     // onPlayerAdd can leak a rect that survives into the next scene enter.
     private isShuttingDown = false;
+
+    private debugOverlay!: DebugOverlay;
+    // Recent patch timestamps for patch_avg / patch_std.
+    private patchTimes: number[] = [];
+    private latestPing: number = 0;
+    private pingTimer?: Phaser.Time.TimerEvent;
+    private static readonly DEBUG_WINDOW = 20;
 
     constructor() { super({ key: 'state_sync_battle' }); }
 
@@ -102,14 +104,16 @@ export class StateSyncBattleScene extends Phaser.Scene {
         this.playerEntities = {};
         this.ballEntities = new Map();
         this.joystickPointerId = null;
-        this.selfInvulnEndsAt = 0;
+        this.patchTimes = [];
+        this.latestPing = 0;
 
         paintGradientBackground(this, SceneBG.state.top, SceneBG.state.bottom,
             { width: MAP_W, height: MAP_H });
         this.hud = createBattleHud(this, () => {
             this.scene.switch('main');
             this.scene.stop('state_sync_battle');
-        }, { kills: true, invuln: true });
+        }, { kills: true, deaths: true });
+        this.debugOverlay = new DebugOverlay(this);
         this.setupInput();
         this.cameras.main.fadeIn(250, 0xff, 0xff, 0xff);
 
@@ -131,6 +135,21 @@ export class StateSyncBattleScene extends Phaser.Scene {
             $(state.balls).onRemove((ball) => this.onBallRemove(ball));
         });
 
+        // Patch cadence (fires per patch, unlike onChange which gates on changes).
+        this.room.onStateChange(() => {
+            if (this.isShuttingDown) return;
+            this.patchTimes.push(this.time.now);
+            if (this.patchTimes.length > StateSyncBattleScene.DEBUG_WINDOW) {
+                this.patchTimes.shift();
+            }
+        });
+
+        this.pingTimer = this.time.addEvent({
+            delay: 2000, loop: true, callback: () => {
+                this.room?.ping((ms) => { this.latestPing = ms; });
+            },
+        });
+
         const onResize = () => {
             this.hud.relayout();
             if (this.joystick.visible) this.hideJoystick();
@@ -148,6 +167,8 @@ export class StateSyncBattleScene extends Phaser.Scene {
             // already disposed the Camera; framework handles it.
             try { this.room?.leave(); } catch {}
             this.room = undefined;
+            try { this.pingTimer?.remove(); } catch {}
+            this.pingTimer = undefined;
 
             // DisplayList.shutdown destroys scene GameObjects automatically;
             // these explicit destroys release tween-held target refs that
@@ -158,7 +179,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
                 }
             } catch {}
             try {
-                for (const entity of this.ballEntities.values()) entity.destroy();
+                for (const be of this.ballEntities.values()) be.entity.destroy();
             } catch {}
             this.playerEntities = {};
             this.ballEntities = new Map();
@@ -168,7 +189,6 @@ export class StateSyncBattleScene extends Phaser.Scene {
             try { this.joystick?.destroy(); } catch {}
 
             this.joystickPointerId = null;
-            this.selfInvulnEndsAt = 0;
         });
     }
 
@@ -230,17 +250,16 @@ export class StateSyncBattleScene extends Phaser.Scene {
             paused: true,
         });
 
+        const buffer = new SnapshotBuffer();
+        buffer.seed(this.time.now, player.x, player.y);
+
         this.playerEntities[sessionId] = {
-            entity, ring, ringTween, label, colorIdx, isSelf,
-            prevX: player.x, prevY: player.y,
-            targetX: player.x, targetY: player.y,
-            interpStart: this.time.now,
+            entity, ring, ringTween, label, colorIdx, isSelf, buffer,
         };
 
-        // listen('state', ...) MUST fire before onChange updates the interp
-        // target so the explosion plays at the old (death) position. Colyseus
-        // 0.17 applies fields in declaration order; server schema declares
-        // `state` before `x/y`.
+        // listen('state') MUST run before onChange so the explosion plays at
+        // the pre-respawn position. Server schema declares `state` before x/y;
+        // Colyseus 0.17 applies in declaration order.
         $(player).listen('state', (newVal: number, oldVal: number | undefined) => {
             // oldVal undefined on first-ever delivery — not a transition.
             if (oldVal !== undefined && oldVal !== newVal) {
@@ -249,43 +268,33 @@ export class StateSyncBattleScene extends Phaser.Scene {
             if (newVal === STATE_INVULN) {
                 ring.setVisible(true);
                 ringTween.resume();
-                if (isSelf) this.selfInvulnEndsAt = this.time.now + INVULN_DURATION;
             } else {
                 ring.setVisible(false);
                 ringTween.pause();
                 ring.setScale(1);
                 ring.setAlpha(1);
-                if (isSelf) this.selfInvulnEndsAt = 0;
             }
         });
 
-        // onChange fires once per patch (~20Hz). We update the interp
-        // target and let update() smooth it. A large jump (respawn) snaps
-        // prev to target so we don't draw a line across the map.
         $(player).onChange(() => {
             const pe = this.playerEntities[sessionId];
             if (!pe) return;
-            const dx = player.x - pe.targetX;
-            const dy = player.y - pe.targetY;
-            const jumped = dx * dx + dy * dy > (PLAYER_SIZE * 4) ** 2;
-            if (jumped) {
-                pe.prevX = player.x; pe.prevY = player.y;
-            } else {
-                pe.prevX = pe.entity.x; pe.prevY = pe.entity.y;
+            pe.buffer.push(this.time.now, player.x, player.y, JUMP_DIST_SQ);
+            if (isSelf) {
+                this.hud.kills?.setText(`Score ${player.kills}`);
+                this.hud.deaths?.setText(`Outs ${player.deaths}`);
             }
-            pe.targetX = player.x;
-            pe.targetY = player.y;
-            pe.interpStart = this.time.now;
-            if (isSelf) this.hud.kills?.setText(`Kills ${player.kills}`);
         });
 
         // First-paint prime: listen/onChange only fire on future changes.
         if (player.state === STATE_INVULN) {
             ring.setVisible(true);
             ringTween.resume();
-            if (isSelf) this.selfInvulnEndsAt = this.time.now + INVULN_DURATION;
         }
-        if (isSelf) this.hud.kills?.setText(`Kills ${player.kills ?? 0}`);
+        if (isSelf) {
+            this.hud.kills?.setText(`Score ${player.kills ?? 0}`);
+            this.hud.deaths?.setText(`Outs ${player.deaths ?? 0}`);
+        }
     }
 
     private onPlayerRemove(sessionId: string): void {
@@ -320,12 +329,18 @@ export class StateSyncBattleScene extends Phaser.Scene {
         if (ball.ownerSessionId === this.room.sessionId) {
             entity.setStrokeStyle(1.5, 0xFFFFFF, 1);
         }
-        this.ballEntities.set(ball, entity);
-        $(ball).onChange(() => { entity.x = ball.x; entity.y = ball.y; });
+        const buffer = new SnapshotBuffer();
+        buffer.seed(this.time.now, ball.x, ball.y);
+        this.ballEntities.set(ball, { entity, buffer });
+        $(ball).onChange(() => {
+            const be = this.ballEntities.get(ball);
+            if (!be) return;
+            be.buffer.push(this.time.now, ball.x, ball.y, JUMP_DIST_SQ);
+        });
     }
 
     private onBallRemove(ball: any): void {
-        this.ballEntities.get(ball)?.destroy();
+        this.ballEntities.get(ball)?.entity.destroy();
         this.ballEntities.delete(ball);
     }
 
@@ -434,27 +449,41 @@ export class StateSyncBattleScene extends Phaser.Scene {
 
         this.room.send(0, this.inputPayload);
 
-        // Per-frame interp: players lerp prev→target over INTERP_DURATION.
-        // Decouples render from patch rate so the camera lerp has a smooth
-        // target. Bullets skip interp to keep ricochets honest.
-        const now = this.time.now;
+        // Sample every entity at `now - INTERP_DELAY`.
+        const renderTime = this.time.now - INTERP_DELAY;
         for (const sid of Object.keys(this.playerEntities)) {
             const pe = this.playerEntities[sid];
-            const t = Math.min(1, (now - pe.interpStart) / INTERP_DURATION);
-            const x = pe.prevX + (pe.targetX - pe.prevX) * t;
-            const y = pe.prevY + (pe.targetY - pe.prevY) * t;
-            pe.entity.x = x; pe.entity.y = y;
-            pe.ring.x = x;   pe.ring.y = y;
-            pe.label.x = x;  pe.label.y = y - PLAYER_SIZE;
+            const s = pe.buffer.sample(renderTime);
+            pe.entity.x = s.x; pe.entity.y = s.y;
+            pe.ring.x = s.x;   pe.ring.y = s.y;
+            pe.label.x = s.x;  pe.label.y = s.y - PLAYER_SIZE;
+        }
+        for (const be of this.ballEntities.values()) {
+            const s = be.buffer.sample(renderTime);
+            be.entity.x = s.x; be.entity.y = s.y;
         }
 
-        // Invuln countdown from the client-side snapshot taken at the last
-        // STATE_ALIVE→STATE_INVULN transition (no server streaming needed).
-        if (this.hud.invuln) {
-            const remain = Math.max(0, this.selfInvulnEndsAt - this.time.now);
-            this.hud.invuln.setText(remain > 0
-                ? `Invuln ${(remain / 1000).toFixed(1)}s`
-                : 'Invuln --');
+        this.updateDebug();
+    }
+
+    /** Emit default diagnostic metrics. */
+    private updateDebug(): void {
+        let avg = 0, std = 0;
+        const t = this.patchTimes;
+        if (t.length >= 2) {
+            const gaps: number[] = [];
+            for (let i = 1; i < t.length; i++) gaps.push(t[i] - t[i - 1]);
+            avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+            const variance = gaps.reduce((a, b) => a + (b - avg) ** 2, 0) / gaps.length;
+            std = Math.sqrt(variance);
         }
+        const entityCount = Object.keys(this.playerEntities).length + this.ballEntities.size;
+        const heap = (performance as any).memory?.usedJSHeapSize;
+        this.debugOverlay.set('fps', this.game.loop.actualFps.toFixed(0));
+        this.debugOverlay.set('ping', `${this.latestPing.toFixed(0)}ms`);
+        this.debugOverlay.set('patch_avg', `${avg.toFixed(1)}ms`);
+        this.debugOverlay.set('patch_std', `${std.toFixed(1)}ms`);
+        this.debugOverlay.set('entities', entityCount);
+        if (heap) this.debugOverlay.set('mem', `${(heap / 1048576).toFixed(1)}MB`);
     }
 }
