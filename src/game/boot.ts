@@ -16,7 +16,8 @@ import { MainScene } from '../scenes/main_scene';
 export function createGame(role: any) {
     const config: Phaser.Types.Core.GameConfig = {
         type: Phaser.AUTO,
-        fps: { target: 60, forceSetTimeOut: true, smoothStep: false },
+        // RAF (forceSetTimeOut: false) — setTimeout-driven loop fires off vsync.
+        fps: { target: 60, forceSetTimeOut: false, smoothStep: true },
         width: window.innerWidth,
         height: window.innerHeight,
         parent: 'game',

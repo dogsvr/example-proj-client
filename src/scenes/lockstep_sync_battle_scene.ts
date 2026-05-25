@@ -546,7 +546,7 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
         const entity = this.add.rectangle(spawnX, spawnY, PLAYER_SIZE, PLAYER_SIZE, bodyColor);
         if (isSelf) {
             entity.setStrokeStyle(3, 0xFFFFFF, 1);
-            this.cameras.main.startFollow(entity, true, 0.1, 0.1);
+            this.cameras.main.startFollow(entity, false, 0.1, 0.1);
         }
 
         const label = this.add.text(spawnX, spawnY - PLAYER_SIZE, '', {

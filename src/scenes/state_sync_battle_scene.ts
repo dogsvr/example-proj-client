@@ -67,7 +67,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
     rexUI!: UIPlugin;
     rexVirtualJoyStick!: VirtualJoyStickPlugin;
     room: Room;
-    playerEntities: { [sessionId: string]: PlayerEntity } = {};
+    playerEntities: Map<string, PlayerEntity> = new Map();
     // Keyed by the Ball schema instance — ArraySchema.onAdd gives insertion
     // ordinal while onRemove gives shifting array index, so neither is
     // usable as a correlation key.
@@ -95,17 +95,26 @@ export class StateSyncBattleScene extends Phaser.Scene {
     private latestPing: number = 0;
     private pingTimer?: Phaser.Time.TimerEvent;
     private static readonly DEBUG_WINDOW = 20;
+    private static readonly DEBUG_INTERVAL = 250;   // ms between updateDebug ticks
+    private nextDebugUpdateTime = 0;
+
+    // Pools grown on demand; destroyed in SHUTDOWN.
+    private ballArcPool: Phaser.GameObjects.Arc[] = [];
+    private explosionPool: Phaser.GameObjects.Arc[] = [];
 
     constructor() { super({ key: 'state_sync_battle' }); }
 
     async create() {
         // Phaser reuses Scene instances by key — reset per-instance state.
         this.isShuttingDown = false;
-        this.playerEntities = {};
+        this.playerEntities = new Map();
         this.ballEntities = new Map();
         this.joystickPointerId = null;
         this.patchTimes = [];
         this.latestPing = 0;
+        this.nextDebugUpdateTime = 0;
+        this.ballArcPool = [];
+        this.explosionPool = [];
 
         paintGradientBackground(this, SceneBG.state.top, SceneBG.state.bottom,
             { width: MAP_W, height: MAP_H });
@@ -174,15 +183,21 @@ export class StateSyncBattleScene extends Phaser.Scene {
             // these explicit destroys release tween-held target refs that
             // otherwise leak across restarts. destroy() is idempotent.
             try {
-                for (const sid of Object.keys(this.playerEntities)) {
-                    this.destroyPlayerEntity(this.playerEntities[sid]);
+                for (const pe of this.playerEntities.values()) {
+                    this.destroyPlayerEntity(pe);
                 }
             } catch {}
             try {
                 for (const be of this.ballEntities.values()) be.entity.destroy();
+                for (const arc of this.ballArcPool) arc.destroy();
             } catch {}
-            this.playerEntities = {};
+            try {
+                for (const arc of this.explosionPool) arc.destroy();
+            } catch {}
+            this.playerEntities = new Map();
             this.ballEntities = new Map();
+            this.ballArcPool = [];
+            this.explosionPool = [];
 
             // rex joystick holds refs to base+thumb; destroy() detaches
             // its pointer listeners, then DisplayList handles the visuals.
@@ -219,7 +234,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
             PLAYER_SIZE, PLAYER_SIZE, bodyColor);
         if (isSelf) {
             entity.setStrokeStyle(3, 0xFFFFFF, 1);
-            this.cameras.main.startFollow(entity, true, 0.1, 0.1);
+            this.cameras.main.startFollow(entity, false, 0.1, 0.1);
         }
 
         // Head label: "YOU" for self, "P<n>" for others. Colour-matched
@@ -253,9 +268,11 @@ export class StateSyncBattleScene extends Phaser.Scene {
         const buffer = new SnapshotBuffer();
         buffer.seed(this.time.now, player.x, player.y);
 
-        this.playerEntities[sessionId] = {
+        this.playerEntities.set(sessionId, {
             entity, ring, ringTween, label, colorIdx, isSelf, buffer,
-        };
+        });
+
+        let lastKills = -1, lastDeaths = -1;
 
         // listen('state') MUST run before onChange so the explosion plays at
         // the pre-respawn position. Server schema declares `state` before x/y;
@@ -277,12 +294,18 @@ export class StateSyncBattleScene extends Phaser.Scene {
         });
 
         $(player).onChange(() => {
-            const pe = this.playerEntities[sessionId];
+            const pe = this.playerEntities.get(sessionId);
             if (!pe) return;
             pe.buffer.push(this.time.now, player.x, player.y, JUMP_DIST_SQ);
             if (isSelf) {
-                this.hud.kills?.setText(`Score ${player.kills}`);
-                this.hud.deaths?.setText(`Outs ${player.deaths}`);
+                if (player.kills !== lastKills) {
+                    this.hud.kills?.setText(`Score ${player.kills}`);
+                    lastKills = player.kills;
+                }
+                if (player.deaths !== lastDeaths) {
+                    this.hud.deaths?.setText(`Outs ${player.deaths}`);
+                    lastDeaths = player.deaths;
+                }
             }
         });
 
@@ -292,16 +315,18 @@ export class StateSyncBattleScene extends Phaser.Scene {
             ringTween.resume();
         }
         if (isSelf) {
-            this.hud.kills?.setText(`Score ${player.kills ?? 0}`);
-            this.hud.deaths?.setText(`Outs ${player.deaths ?? 0}`);
+            lastKills = player.kills ?? 0;
+            lastDeaths = player.deaths ?? 0;
+            this.hud.kills?.setText(`Score ${lastKills}`);
+            this.hud.deaths?.setText(`Outs ${lastDeaths}`);
         }
     }
 
     private onPlayerRemove(sessionId: string): void {
-        const pe = this.playerEntities[sessionId];
+        const pe = this.playerEntities.get(sessionId);
         if (!pe) return;
         this.destroyPlayerEntity(pe);
-        delete this.playerEntities[sessionId];
+        this.playerEntities.delete(sessionId);
     }
 
     private destroyPlayerEntity(pe: PlayerEntity): void {
@@ -323,12 +348,9 @@ export class StateSyncBattleScene extends Phaser.Scene {
         const color = owner
             ? PLAYER_PALETTE[(owner.colorIdx ?? 0) % PLAYER_PALETTE.length]
             : Palette.textSecondary;
+        const isOwn = ball.ownerSessionId === this.room.sessionId;
 
-        const entity = this.add.arc(ball.x, ball.y, BALL_RADIUS, 0, 360, false, color);
-        // White outline on own bullets — subtle cue these can't hit you.
-        if (ball.ownerSessionId === this.room.sessionId) {
-            entity.setStrokeStyle(1.5, 0xFFFFFF, 1);
-        }
+        const entity = this.acquireBallArc(ball.x, ball.y, color, isOwn);
         const buffer = new SnapshotBuffer();
         buffer.seed(this.time.now, ball.x, ball.y);
         this.ballEntities.set(ball, { entity, buffer });
@@ -340,27 +362,54 @@ export class StateSyncBattleScene extends Phaser.Scene {
     }
 
     private onBallRemove(ball: any): void {
-        this.ballEntities.get(ball)?.entity.destroy();
+        const be = this.ballEntities.get(ball);
+        if (!be) return;
+        this.releaseBallArc(be.entity);
         this.ballEntities.delete(ball);
     }
 
-    /** Cheap radial particle burst: 6 small circles tween outward + fade. */
+    private acquireBallArc(
+        x: number, y: number, color: number, isOwn: boolean,
+    ): Phaser.GameObjects.Arc {
+        const arc = this.ballArcPool.pop()
+            ?? this.add.arc(0, 0, BALL_RADIUS, 0, 360, false, color);
+        arc.setPosition(x, y).setFillStyle(color).setVisible(true).setActive(true);
+        if (isOwn) arc.setStrokeStyle(1.5, 0xFFFFFF, 1);
+        else arc.setStrokeStyle();
+        return arc;
+    }
+
+    private releaseBallArc(arc: Phaser.GameObjects.Arc): void {
+        arc.setVisible(false).setActive(false).setStrokeStyle();
+        this.ballArcPool.push(arc);
+    }
+
+    /** Cheap radial particle burst: 6 small circles fly outward + fade. */
     private spawnExplosion(x: number, y: number, color: number): void {
         const N = 6;
         for (let i = 0; i < N; i++) {
             const angle = (i / N) * Math.PI * 2;
-            const shard = this.add.circle(x, y, 3, color, 1);
             const dx = Math.cos(angle) * 28;
             const dy = Math.sin(angle) * 28;
+            const circle = this.explosionPool.pop()
+                ?? this.add.circle(0, 0, 3, 0xffffff, 1);
+            circle.setPosition(x, y)
+                .setFillStyle(color)
+                .setAlpha(1).setScale(1)
+                .setVisible(true).setActive(true);
             this.tweens.add({
-                targets: shard,
+                targets: circle,
                 x: x + dx,
                 y: y + dy,
                 alpha: 0,
                 scale: 0.5,
                 duration: 300,
                 ease: 'Cubic.easeOut',
-                onComplete: () => shard.destroy(),
+                onComplete: () => {
+                    if (this.isShuttingDown) return;
+                    circle.setVisible(false).setActive(false);
+                    this.explosionPool.push(circle);
+                },
             });
         }
     }
@@ -451,8 +500,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
 
         // Sample every entity at `now - INTERP_DELAY`.
         const renderTime = this.time.now - INTERP_DELAY;
-        for (const sid of Object.keys(this.playerEntities)) {
-            const pe = this.playerEntities[sid];
+        for (const pe of this.playerEntities.values()) {
             const s = pe.buffer.sample(renderTime);
             pe.entity.x = s.x; pe.entity.y = s.y;
             pe.ring.x = s.x;   pe.ring.y = s.y;
@@ -468,6 +516,9 @@ export class StateSyncBattleScene extends Phaser.Scene {
 
     /** Emit default diagnostic metrics. */
     private updateDebug(): void {
+        if (this.time.now < this.nextDebugUpdateTime) return;
+        this.nextDebugUpdateTime = this.time.now + StateSyncBattleScene.DEBUG_INTERVAL;
+
         let avg = 0, std = 0;
         const t = this.patchTimes;
         if (t.length >= 2) {
@@ -477,7 +528,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
             const variance = gaps.reduce((a, b) => a + (b - avg) ** 2, 0) / gaps.length;
             std = Math.sqrt(variance);
         }
-        const entityCount = Object.keys(this.playerEntities).length + this.ballEntities.size;
+        const entityCount = this.playerEntities.size + this.ballEntities.size;
         const heap = (performance as any).memory?.usedJSHeapSize;
         this.debugOverlay.set('fps', this.game.loop.actualFps.toFixed(0));
         this.debugOverlay.set('ping', `${this.latestPing.toFixed(0)}ms`);

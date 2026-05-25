@@ -10,47 +10,60 @@ interface Snapshot { ts: number; x: number; y: number; }
 
 export class SnapshotBuffer {
     private readonly capacity: number;
-    private readonly buf: Snapshot[] = [];
+    private readonly buf: Snapshot[];
+    private head = 0;   // next write
+    private size = 0;   // valid entries
 
     constructor(capacity: number = 8) {
         this.capacity = Math.max(2, capacity);
+        this.buf = new Array(this.capacity);
+        for (let i = 0; i < this.capacity; i++) {
+            this.buf[i] = { ts: 0, x: 0, y: 0 };
+        }
     }
 
-    /** Reset and seed with one point — call on entity creation. */
+    /** Reset to a single point. */
     seed(ts: number, x: number, y: number): void {
-        this.buf.length = 0;
-        this.buf.push({ ts, x, y });
+        const slot = this.buf[0];
+        slot.ts = ts; slot.x = x; slot.y = y;
+        this.head = 1 % this.capacity;
+        this.size = 1;
     }
 
-    /** Push a snapshot. A move > jumpDistSq is treated as teleport: clear
-     *  history and re-seed so sample() doesn't draw across the map. */
+    /** Push a snapshot. Move > jumpDistSq is a teleport: history reset (no lerp across map). */
     push(ts: number, x: number, y: number, jumpDistSq: number): void {
-        const last = this.buf.length > 0 ? this.buf[this.buf.length - 1] : undefined;
-        if (last) {
+        if (this.size > 0) {
+            const lastIdx = (this.head - 1 + this.capacity) % this.capacity;
+            const last = this.buf[lastIdx];
             const dx = x - last.x, dy = y - last.y;
             if (dx * dx + dy * dy > jumpDistSq) {
-                this.buf.length = 0;
-                this.buf.push({ ts, x, y });
+                this.seed(ts, x, y);
                 return;
             }
         }
-        this.buf.push({ ts, x, y });
-        if (this.buf.length > this.capacity) this.buf.shift();
+        const slot = this.buf[this.head];
+        slot.ts = ts; slot.x = x; slot.y = y;
+        this.head = (this.head + 1) % this.capacity;
+        if (this.size < this.capacity) this.size++;
     }
 
     sample(renderTime: number): Sample {
-        const n = this.buf.length;
-        if (n === 0) return { x: 0, y: 0 };
-        if (n === 1 || renderTime <= this.buf[0].ts) {
-            return { x: this.buf[0].x, y: this.buf[0].y };
+        if (this.size === 0) return { x: 0, y: 0 };
+
+        const oldestIdx = (this.head - this.size + this.capacity) % this.capacity;
+        const oldest = this.buf[oldestIdx];
+        if (this.size === 1 || renderTime <= oldest.ts) {
+            return { x: oldest.x, y: oldest.y };
         }
-        const newest = this.buf[n - 1];
+
+        const newestIdx = (this.head - 1 + this.capacity) % this.capacity;
+        const newest = this.buf[newestIdx];
         if (renderTime >= newest.ts) return { x: newest.x, y: newest.y };
 
         // Scan from newest back — typical query is near the tail.
-        for (let i = n - 1; i > 0; i--) {
-            const right = this.buf[i];
-            const left = this.buf[i - 1];
+        for (let i = this.size - 1; i > 0; i--) {
+            const right = this.buf[(oldestIdx + i) % this.capacity];
+            const left = this.buf[(oldestIdx + i - 1) % this.capacity];
             if (left.ts <= renderTime && renderTime <= right.ts) {
                 const span = right.ts - left.ts;
                 const t = span > 0 ? (renderTime - left.ts) / span : 0;

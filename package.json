@@ -6,6 +6,7 @@
   "scripts": {
     "start": "parcel serve index.html --port 4567",
     "build": "parcel build index.html",
+    "test-render": "parcel serve test/render-test.html --port 4568",
     "linkDog": "npm link @dogsvr/cl-tsrpc"
   },
   "author": "rowanzhu",

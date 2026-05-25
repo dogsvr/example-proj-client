@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Local Render Test (no network)</title>
+    <style>
+        :root {
+            --bg-top: #FFF3E2;
+            --bg-bot: #FFD6A5;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            min-height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bot) 100%);
+            background-attachment: fixed;
+        }
+
+        #game {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        #game canvas {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="game"></div>
+    <script src="render-test.ts" type="module"></script>
+</body>
+
+</html>
