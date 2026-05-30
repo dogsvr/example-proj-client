@@ -545,7 +545,6 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
 
         const entity = this.add.rectangle(spawnX, spawnY, PLAYER_SIZE, PLAYER_SIZE, bodyColor);
         if (isSelf) {
-            entity.setStrokeStyle(3, 0xFFFFFF, 1);
             this.cameras.main.startFollow(entity, false, 0.1, 0.1);
         }
 
@@ -625,11 +624,9 @@ export class LockstepSyncBattleScene extends Phaser.Scene {
             y: -p.lastDirY * BALL_SPEED,
         });
 
-        const isMine = p.sessionId === this.selfSessionId;
         const color = PLAYER_PALETTE[p.colorIdx] ?? Palette.danger;
         const entity = this.add.arc(p.body.position.x, p.body.position.y,
             BALL_RADIUS, 0, 360, false, color);
-        if (isMine) entity.setStrokeStyle(1.5, 0xFFFFFF, 1);
 
         const ball: BallWorld = {
             ownerSessionId: p.sessionId,

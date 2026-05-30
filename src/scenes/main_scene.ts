@@ -114,6 +114,7 @@ export class MainScene extends Phaser.Scene {
         };
 
         addBtn('Start Battle (state sync)', () => this.onStartBattle('state'));
+        addBtn('Start Battle (state sync, raw)', () => this.onStartBattle('state', 'raw'));
         addBtn('Start Battle (lockstep)', () => this.onStartBattle('lockstep'));
         addBtn('Query Rank List', () => this.onQueryRank(), false);
 
@@ -172,7 +173,7 @@ export class MainScene extends Phaser.Scene {
 
     // ---- actions -----------------------------------------------------------
 
-    private async onStartBattle(syncType: 'state' | 'lockstep') {
+    private async onStartBattle(syncType: 'state' | 'lockstep', variant: 'normal' | 'raw' = 'normal') {
         try {
             const res = await startBattle(syncType);
             this.registry.set('startBattleRes', res);
@@ -182,9 +183,11 @@ export class MainScene extends Phaser.Scene {
         }
 
         const preload = getPreloadScene(this.game);
-        const [key, importer] = syncType === 'state'
-            ? ['state_sync_battle', () => import('./state_sync_battle_scene').then((m) => m.StateSyncBattleScene)]
-            : ['lockstep_sync_battle', () => import('./lockstep_sync_battle_scene').then((m) => m.LockstepSyncBattleScene)] as const;
+        const [key, importer] = syncType === 'lockstep'
+            ? ['lockstep_sync_battle', () => import('./lockstep_sync_battle_scene').then((m) => m.LockstepSyncBattleScene)]
+            : variant === 'raw'
+                ? ['state_sync_battle_raw', () => import('./state_sync_battle_raw_scene').then((m) => m.StateSyncBattleRawScene)]
+                : ['state_sync_battle', () => import('./state_sync_battle_scene').then((m) => m.StateSyncBattleScene)] as const;
         try {
             const SceneClass = await preload.showProgressWhile('Loading battle…', (importer as () => Promise<any>)());
             if (!this.scene.get(key)) this.scene.add(key, SceneClass, false);
