@@ -55,7 +55,7 @@ export class StateSyncBattleRawScene extends Phaser.Scene {
     // usable as a correlation key.
     ballEntities: Map<object, BallEntity> = new Map();
     private hud!: BattleHud;
-    inputPayload = { left: false, right: false, up: false, down: false };
+    inputPayload: { dx: number; dy: number } = { dx: 0, dy: 0 };
 
     private joystick!: VirtualJoyStick;
     private joystickBase!: Phaser.GameObjects.Arc;
@@ -403,10 +403,23 @@ export class StateSyncBattleRawScene extends Phaser.Scene {
         const upKey = this.cursors.up.isDown || this.wasd.W.isDown;
         const downKey = this.cursors.down.isDown || this.wasd.S.isDown;
 
-        this.inputPayload.left = this.joystick.left || leftKey;
-        this.inputPayload.right = this.joystick.right || rightKey;
-        this.inputPayload.up = this.joystick.up || upKey;
-        this.inputPayload.down = this.joystick.down || downKey;
+        // 4dir + fixed UI by design (this scene is the analog-counterpart's
+        // raw baseline). Keep boolean inputs but emit the unified vector
+        // payload, normalised so diagonals don't ride the √2 speed bump.
+        const left = this.joystick.left || leftKey;
+        const right = this.joystick.right || rightKey;
+        const up = this.joystick.up || upKey;
+        const down = this.joystick.down || downKey;
+        const kx = (right ? 1 : 0) - (left ? 1 : 0);
+        const ky = (down ? 1 : 0) - (up ? 1 : 0);
+        let dx = 0, dy = 0;
+        if (kx !== 0 || ky !== 0) {
+            const m = Math.hypot(kx, ky);
+            dx = kx / m;
+            dy = ky / m;
+        }
+        this.inputPayload.dx = dx;
+        this.inputPayload.dy = dy;
 
         this.room.send(0, this.inputPayload);
 

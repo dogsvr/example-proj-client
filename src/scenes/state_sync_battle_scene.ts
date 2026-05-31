@@ -23,6 +23,11 @@ const INTERP_DELAY = 100;
 // Per-patch displacement above this is a teleport (respawn) — buffer resets.
 const JUMP_DIST_SQ = (PLAYER_SIZE * 4) ** 2;
 
+// Joystick geometry. Module-scoped so the follow-update closure (which
+// drags the base when the finger overshoots) can read them.
+const JOYSTICK_BASE_RADIUS = 60;
+const JOYSTICK_THUMB_RADIUS = 25;
+
 // 8 high-contrast colours for up to MAX_PLAYERS=8. Stable per-session
 // colorIdx from the server gives every client the same colour for the
 // same player; self gets a white outline + "YOU" label on top.
@@ -73,7 +78,7 @@ export class StateSyncBattleScene extends Phaser.Scene {
     // usable as a correlation key.
     ballEntities: Map<object, BallEntity> = new Map();
     private hud!: BattleHud;
-    inputPayload = { left: false, right: false, up: false, down: false };
+    inputPayload: { dx: number; dy: number } = { dx: 0, dy: 0 };
 
     private joystick!: VirtualJoyStick;
     private joystickBase!: Phaser.GameObjects.Arc;
@@ -414,25 +419,45 @@ export class StateSyncBattleScene extends Phaser.Scene {
 
     /** Floating virtual joystick + arrow keys / WASD. */
     private setupInput(): void {
-        const BASE_RADIUS = 60, THUMB_RADIUS = 25;
-
-        this.joystickBase = this.add.circle(0, 0, BASE_RADIUS, Palette.textPrimary, 0.10);
+        this.joystickBase = this.add.circle(0, 0, JOYSTICK_BASE_RADIUS, Palette.textPrimary, 0.10);
         this.joystickBase.setStrokeStyle(2, Palette.textPrimary, 0.22);
         this.joystickBase.setDepth(1000);
         // Screen-space UI: stays on-screen as the camera follows self.
         this.joystickBase.setScrollFactor(0);
-        this.joystickThumb = this.add.circle(0, 0, THUMB_RADIUS, Palette.textSecondary, 0.55);
+        this.joystickThumb = this.add.circle(0, 0, JOYSTICK_THUMB_RADIUS, Palette.textSecondary, 0.55);
         this.joystickThumb.setDepth(1001);
         this.joystickThumb.setScrollFactor(0);
 
         this.joystick = this.rexVirtualJoyStick.add(this, {
-            x: 0, y: 0, radius: BASE_RADIUS,
+            x: 0, y: 0, radius: JOYSTICK_BASE_RADIUS,
             base: this.joystickBase, thumb: this.joystickThumb,
-            dir: '4dir', // L/R and U/D mutually exclusive, matches server handler
+            dir: '8dir', // analog vector goes via forceX/Y; 8dir keeps boolean fallback diagonal-friendly
             forceMin: 8, // dead zone (px)
             fixed: true,
         });
         this.joystick.setVisible(false);
+
+        // Drag the base when the finger overshoots radius — keeps the finger
+        // glued to the base edge instead of detaching mid-stroke.
+        // Recursion safety: setPosition re-emits 'update', but after the drag
+        // force == BASE_RADIUS so the guard `f <= BASE_RADIUS` terminates.
+        this.joystick.on('update', () => {
+            if (!this.joystick.visible) return;
+            const f = this.joystick.force;
+            if (f <= JOYSTICK_BASE_RADIUS) return;
+            const over = (f - JOYSTICK_BASE_RADIUS) / f;
+            // forceX/Y is base→pointer in screen-space (rex internally
+            // cancels camera scroll), so adding a fraction of it shifts
+            // the base correctly without world↔screen conversion.
+            let newX = this.joystick.x + this.joystick.forceX * over;
+            let newY = this.joystick.y + this.joystick.forceY * over;
+            const hudBand = Spacing.lg + this.hud.height();
+            newX = Math.max(JOYSTICK_BASE_RADIUS,
+                Math.min(this.scale.width - JOYSTICK_BASE_RADIUS, newX));
+            newY = Math.max(hudBand + JOYSTICK_BASE_RADIUS,
+                Math.min(this.scale.height - JOYSTICK_BASE_RADIUS, newY));
+            this.joystick.setPosition(newX, newY);
+        });
 
         this.cursors = this.input.keyboard!.createCursorKeys();
         this.wasd = this.input.keyboard!.addKeys('W,A,S,D') as typeof this.wasd;
@@ -487,10 +512,25 @@ export class StateSyncBattleScene extends Phaser.Scene {
         const upKey = this.cursors.up.isDown || this.wasd.W.isDown;
         const downKey = this.cursors.down.isDown || this.wasd.S.isDown;
 
-        this.inputPayload.left = this.joystick.left || leftKey;
-        this.inputPayload.right = this.joystick.right || rightKey;
-        this.inputPayload.up = this.joystick.up || upKey;
-        this.inputPayload.down = this.joystick.down || downKey;
+        let dx = 0, dy = 0;
+        if (this.joystick.visible && !this.joystick.noKey) {
+            const f = this.joystick.force;
+            if (f > 0) {
+                const mag = Math.min(f / JOYSTICK_BASE_RADIUS, 1);
+                dx = (this.joystick.forceX / f) * mag;
+                dy = (this.joystick.forceY / f) * mag;
+            }
+        } else {
+            const kx = (rightKey ? 1 : 0) - (leftKey ? 1 : 0);
+            const ky = (downKey ? 1 : 0) - (upKey ? 1 : 0);
+            if (kx !== 0 || ky !== 0) {
+                const m = Math.hypot(kx, ky);
+                dx = kx / m;
+                dy = ky / m;
+            }
+        }
+        this.inputPayload.dx = dx;
+        this.inputPayload.dy = dy;
 
         this.room.send(0, this.inputPayload);
 
