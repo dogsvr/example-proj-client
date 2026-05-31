@@ -8,6 +8,7 @@ import type {
     ZoneStartBattleReq, ZoneStartBattleRes,
     ZoneQueryRankListReq, ZoneQueryRankListRes,
     ZoneBattleEndNtf,
+    ZoneHeartbeatReq, ZoneHeartbeatRes,
 } from 'example-proj/protocols/cmd_proto';
 import { composeOpenId, getDeviceId } from './util/device_id';
 import { NAME_MAX_CHARS } from './util/name_truncate';
@@ -21,6 +22,8 @@ import { NAME_MAX_CHARS } from './util/name_truncate';
 let zoneClient: WsClient<typeof serviceProto> | null = null;
 let loggedInRole: any = null;
 let onBattleEndHandler: ((ntf: ZoneBattleEndNtf) => void) | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const HEARTBEAT_INTERVAL_MS = 30000;
 
 export function registerBattleEndHandler(fn: (ntf: ZoneBattleEndNtf) => void) {
     onBattleEndHandler = fn;
@@ -98,6 +101,7 @@ async function zoneLogin(openId: string, zoneId: number, name: string): Promise<
         return v;
     });
     zoneClient.flows.postDisconnectFlow.push((v) => {
+        stopHeartbeat();
         updateConnectionState(false);
         return v;
     });
@@ -117,6 +121,7 @@ async function zoneLogin(openId: string, zoneId: number, name: string): Promise<
     }
     const res = JSON.parse(ret.res.innerRes as string) as ZoneLoginRes;
     loggedInRole = res.role;
+    startHeartbeat();
 
     zoneClient.listenMsg('Common', (msg: MsgCommon) => {
         if (msg.head.cmdId === cmdId.ZONE_BATTLE_END_NTF) {
@@ -140,6 +145,25 @@ async function callZone<TReq, TRes>(cmd: number, req: TReq): Promise<TRes> {
     });
     if (!ret.isSucc) throw new Error(ret.err.message);
     return JSON.parse(ret.res.innerRes as string) as TRes;
+}
+
+// Heartbeat lives only at the connection lifecycle (login success / disconnect),
+// not at scene boundaries — zoneClient stays connected across battle scenes
+// (it carries ZONE_BATTLE_END_NTF), so heartbeat must too.
+function startHeartbeat() {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+        const req: ZoneHeartbeatReq = { clientTs: Date.now() };
+        callZone<ZoneHeartbeatReq, ZoneHeartbeatRes>(cmdId.ZONE_HEARTBEAT, req)
+            .catch(() => { /* postDisconnectFlow handles real disconnect */ });
+    }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+    if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
 }
 
 export function startBattle(syncType: string) {
